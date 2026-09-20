@@ -15,7 +15,7 @@ name = "distrib-chat-client"
 path = "src/bin/client.rs"
 
 [dependencies]
-elfo = { path = "/home/smunix/Projects/oss/rs/elfo/elfo", features = ["full", "network", "unstable"] }
+elfo = { version = "0.2.0-alpha.21", features = ["full", "network", "unstable"] }
 tokio = { version = "1.38", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"

@@ -322,12 +322,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "diatomic-waker"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab03c107fafeb3ee9f5925686dbb7a73bc76e3932abb0d2b365cb64b169cf04c"
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -363,6 +357,8 @@ dependencies = [
 [[package]]
 name = "elfo"
 version = "0.2.0-alpha.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ec500f8c8cc6b0aafef38c8f34fee247c94576bd79c2568098b7cfcac728f9b"
 dependencies = [
  "elfo-configurer",
  "elfo-core",
@@ -378,6 +374,8 @@ dependencies = [
 [[package]]
 name = "elfo-configurer"
 version = "0.2.0-alpha.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2949b819ea1bec7a251741bbef7d685028f11ee1a342f3eb088e3043e3ddb64"
 dependencies = [
  "elfo-core",
  "futures",
@@ -392,12 +390,13 @@ dependencies = [
 [[package]]
 name = "elfo-core"
 version = "0.2.0-alpha.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63cd0dd9a62459f98a3c35b6d048ebcf7fc636132b1432bea2975b9490cbc673"
 dependencies = [
  "arc-swap",
  "cordyceps",
  "dashmap",
  "derive_more",
- "diatomic-waker",
  "elfo-macros",
  "elfo-utils",
  "erased-serde",
@@ -429,6 +428,8 @@ dependencies = [
 [[package]]
 name = "elfo-dumper"
 version = "0.2.0-alpha.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edc25981541357b2f91a47e85677510551c04431498fc645575a67bdf7d3d377"
 dependencies = [
  "bytesize",
  "elfo-core",
@@ -449,6 +450,8 @@ dependencies = [
 [[package]]
 name = "elfo-logger"
 version = "0.2.0-alpha.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3559da73af8ccc244d7d0754696258023ef23290fbe1a7477ccd2d16aab0226d"
 dependencies = [
  "arc-swap",
  "bytesize",
@@ -471,6 +474,8 @@ dependencies = [
 [[package]]
 name = "elfo-macros"
 version = "0.2.0-alpha.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab17b371d9296379cabb42663dc5af0d98451f8b9509d20efe671ba54e41cf67"
 dependencies = [
  "elfo-macros-impl",
  "syn 2.0.119",
@@ -479,6 +484,8 @@ dependencies = [
 [[package]]
 name = "elfo-macros-impl"
 version = "0.2.0-alpha.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e1d0e30d000131aec634b18592d443d8881fa0c5366f20e8f83086c2433b70e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -488,6 +495,8 @@ dependencies = [
 [[package]]
 name = "elfo-network"
 version = "0.2.0-alpha.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9c4e4555a9b82cf139441bce40a6155d7b8310f5b3ccd730851eea484652cb8"
 dependencies = [
  "bitflags",
  "byteorder",
@@ -515,6 +524,8 @@ dependencies = [
 [[package]]
 name = "elfo-pinger"
 version = "0.2.0-alpha.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8ef59f1f4c19eba27c584c4edfaa369234a4845071adbccb5339ae550884abd"
 dependencies = [
  "elfo-core",
  "elfo-utils",
@@ -527,6 +538,8 @@ dependencies = [
 [[package]]
 name = "elfo-telemeter"
 version = "0.2.0-alpha.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8aeb7a90f0b7a1b3064d8cbb4fbaa2404e5e83ebbc267efda6c58d0c1ae2f67"
 dependencies = [
  "cow-utils",
  "elfo-core",
@@ -550,6 +563,8 @@ dependencies = [
 [[package]]
 name = "elfo-test"
 version = "0.2.0-alpha.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36804c0b5289b6f416b2d976ebb9bc8dda371959465bd2e3f5303fa326a668b9"
 dependencies = [
  "elfo-configurer",
  "elfo-core",
@@ -564,6 +579,8 @@ dependencies = [
 [[package]]
 name = "elfo-utils"
 version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5090f0446b06d5897356112a3d3a7c1a6578c3965cd035f1e727d4958d5097bc"
 dependencies = [
  "crossbeam-utils",
  "quanta",
