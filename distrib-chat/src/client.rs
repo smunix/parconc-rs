@@ -1,16 +1,20 @@
 //! Local client actor and internal connection management.
 //!
 //! Corresponds to `LocalClient`, `talk`, `runClient`, and `handleMessage` in `chat.hs`.
-//! Each connected TCP client (e.g. from `telnet` or `nc`) is managed by a dedicated actor
-//! instance within the `clients` actor group, indexed by a unique `ClientId`.
+//! Each connected TCP client (e.g. from `telnet`, `nc`, or `distrib-chat-client`) is managed
+//! by a dedicated actor instance within the `clients` actor group, indexed by a unique `ClientId`.
 //!
 //! State machine:
 //! 1. Client connects via TCP.
 //! 2. Prompt "What is your name?".
-//! 3. Verify name uniqueness with the `server` actor.
+//! 3. Verify name uniqueness with the `server` actor (supporting optional initial public key).
 //! 4. If name is taken, inform the user and ask again.
 //! 5. If accepted, broadcast join notice to the cluster and stream commands:
-//!    - `/tell <user> <message>` -> whisper
+//!    - `/tell <user> <message>` -> plain whisper
+//!    - `/etell <user> <ciphertext>` -> opaque E2EE whisper (routed blindly by server)
+//!    - `/pubkey <key>` -> register or update client's public key
+//!    - `/getkey <user>` -> fetch public key of another user
+//!    - `/users` -> list connected users with E2EE capability indicators
 //!    - `/kick <user>` -> kick user
 //!    - `/quit` -> disconnect
 //!    - `<message>` -> public broadcast
@@ -74,11 +78,25 @@ pub struct KickClient {
 // Request / Response interactions with the central Server actor
 // -----------------------------------------------------------------------------
 
-/// Request sent by a new client actor to the server to register its chosen nickname.
+/// Request sent by a new client actor to the server to register its chosen nickname and optional public key.
 #[message(ret = Result<(), String>)]
 pub struct RegisterClient {
     pub client_id: ClientId,
     pub name: ClientName,
+    pub pubkey: Option<String>,
+}
+
+/// Request to register/update public key for an existing client.
+#[message(ret = Result<(), String>)]
+pub struct RegisterKeyRequest {
+    pub name: ClientName,
+    pub pubkey: String,
+}
+
+/// Request to retrieve the registered public key of a user.
+#[message(ret = Result<String, String>)]
+pub struct GetKeyRequest {
+    pub target: ClientName,
 }
 
 /// Request sent to the server to unregister upon disconnection.
@@ -95,12 +113,20 @@ pub struct BroadcastRequest {
     pub msg: String,
 }
 
-/// Request to whisper to a specific user.
+/// Request to whisper (unencrypted) to a specific user.
 #[message(ret = Result<(), String>)]
 pub struct TellRequest {
     pub from: ClientName,
     pub to: ClientName,
     pub msg: String,
+}
+
+/// Request to deliver an opaque E2EE whisper payload to a specific user.
+#[message(ret = Result<(), String>)]
+pub struct EncryptedTellRequest {
+    pub from: ClientName,
+    pub to: ClientName,
+    pub ciphertext: String,
 }
 
 /// Request to kick a user.
@@ -110,13 +136,20 @@ pub struct KickRequest {
     pub victim: ClientName,
 }
 
+/// User info for `/users` response including E2EE capability.
+#[message(part)]
+pub struct UserInfo {
+    pub name: ClientName,
+    pub has_e2ee: bool,
+}
+
 /// Request sent by a client actor to the server to list all active clients across the cluster.
-#[message(ret = Vec<ClientName>)]
+#[message(ret = Vec<UserInfo>)]
 pub struct ListUsersRequest;
 
 /// Creates a `Blueprint` for the TCP acceptor actor group.
 ///
-/// Listens for telnet/netcat client connections on `tcp_port`.
+/// Listens for client connections on `tcp_port`.
 /// For each accepted connection, it stores the stream and sends `NewClientConnection`
 /// to the `clients` actor group, causing Elfo to spawn a new client actor.
 pub fn acceptor_blueprint(tcp_port: u16, pending_sockets: PendingSockets) -> Blueprint {
@@ -138,7 +171,7 @@ pub fn acceptor_blueprint(tcp_port: u16, pending_sockets: PendingSockets) -> Blu
                     return;
                 }
             };
-            tracing::info!(%addr, "Chat server listening for telnet clients");
+            tracing::info!(%addr, "Chat server listening for telnet/E2EE clients");
 
             static NEXT_CLIENT_ID: std::sync::atomic::AtomicU64 =
                 std::sync::atomic::AtomicU64::new(1);
@@ -237,20 +270,24 @@ pub fn blueprint(pending_sockets: PendingSockets) -> Blueprint {
                     let mut registered = false;
 
                     msg!(match envelope {
-                        ClientInput { text: name, .. } => {
-                            let trimmed = name.trim().to_string();
-                            if trimmed.is_empty() {
+                        ClientInput { text: raw_name, .. } => {
+                            let mut parts = raw_name.split_whitespace();
+                            let chosen_name = parts.next().unwrap_or("").to_string();
+                            let pubkey = parts.next().map(|s| s.to_string());
+
+                            if chosen_name.is_empty() {
                                 continue;
                             }
 
-                            // Try registering with the server actor
+                            // Try registering with the server actor (including optional pubkey)
                             match ctx.request(RegisterClient {
                                 client_id,
-                                name: trimmed.clone(),
+                                name: chosen_name.clone(),
+                                pubkey,
                             }).resolve().await {
                                 Ok(Ok(())) => {
-                                    info!(name = %trimmed, client_id, "Client successfully logged in");
-                                    client_name = Some(trimmed);
+                                    info!(name = %chosen_name, client_id, "Client successfully logged in");
+                                    client_name = Some(chosen_name);
                                     registered = true;
                                 }
                                 Ok(Err(reason)) => {
@@ -285,7 +322,7 @@ pub fn blueprint(pending_sockets: PendingSockets) -> Blueprint {
 
                 write_line(
                     &writer,
-                    &format!("Welcome to the distributed chat, {name}!\r\nAvailable commands: /users, /tell <user> <msg>, /kick <user>, /quit\r\n"),
+                    &format!("Welcome to the distributed chat, {name}!\r\nAvailable commands: /users, /tell <user> <msg>, /etell <user> <ciphertext>, /pubkey <key>, /getkey <user>, /kick <user>, /quit\r\n"),
                 ).await;
 
                 // 2. Main message loop (corresponds to `runClient` & `handleMessage` in Haskell `chat.hs`)
@@ -310,7 +347,14 @@ pub fn blueprint(pending_sockets: PendingSockets) -> Blueprint {
                                     Ok(all_users) => {
                                         let other_users: Vec<String> = all_users
                                             .into_iter()
-                                            .filter(|u| u != &name)
+                                            .filter(|u| u.name != name)
+                                            .map(|u| {
+                                                if u.has_e2ee {
+                                                    format!("{} [e2ee]", u.name)
+                                                } else {
+                                                    u.name
+                                                }
+                                            })
                                             .collect();
                                         if other_users.is_empty() {
                                             write_line(&writer, "*** No other users are currently connected.\r\n").await;
@@ -325,17 +369,60 @@ pub fn blueprint(pending_sockets: PendingSockets) -> Blueprint {
                                         write_line(&writer, &format!("*** Error retrieving users: {err}\r\n")).await;
                                     }
                                 }
-                            } else if let Some(rest) = line.strip_prefix("/kick ") {
-                                let victim = rest.trim();
-                                if victim.is_empty() {
-                                    write_line(&writer, "Usage: /kick <user>\r\n").await;
+                            } else if let Some(rest) = line.strip_prefix("/pubkey ") {
+                                let key = rest.trim();
+                                if key.is_empty() {
+                                    write_line(&writer, "Usage: /pubkey <base64_public_key>\r\n").await;
                                 } else {
-                                    match ctx.request(KickRequest {
-                                        kicker: name.clone(),
-                                        victim: victim.to_string(),
+                                    match ctx.request(RegisterKeyRequest {
+                                        name: name.clone(),
+                                        pubkey: key.to_string(),
                                     }).resolve().await {
                                         Ok(Ok(())) => {
-                                            write_line(&writer, &format!("*** You kicked {victim}\r\n")).await;
+                                            write_line(&writer, "*** Public key registered successfully.\r\n").await;
+                                        }
+                                        Ok(Err(err)) => {
+                                            write_line(&writer, &format!("*** {err}\r\n")).await;
+                                        }
+                                        Err(err) => {
+                                            write_line(&writer, &format!("*** Error registering key: {err}\r\n")).await;
+                                        }
+                                    }
+                                }
+                            } else if let Some(rest) = line.strip_prefix("/getkey ") {
+                                let target = rest.trim();
+                                if target.is_empty() {
+                                    write_line(&writer, "Usage: /getkey <user>\r\n").await;
+                                } else {
+                                    match ctx.request(GetKeyRequest {
+                                        target: target.to_string(),
+                                    }).resolve().await {
+                                        Ok(Ok(pubkey)) => {
+                                            write_line(&writer, &format!("*** KEY {target} {pubkey}\r\n")).await;
+                                        }
+                                        Ok(Err(err)) => {
+                                            write_line(&writer, &format!("*** {err}\r\n")).await;
+                                        }
+                                        Err(err) => {
+                                            write_line(&writer, &format!("*** Error retrieving key: {err}\r\n")).await;
+                                        }
+                                    }
+                                }
+                            } else if let Some(rest) = line.strip_prefix("/etell ") {
+                                let mut parts = rest.splitn(2, ' ');
+                                let target = parts.next().unwrap_or("");
+                                let ciphertext = parts.next().unwrap_or("");
+
+                                if target.is_empty() || ciphertext.is_empty() {
+                                    write_line(&writer, "Usage: /etell <user> <base64_ciphertext>\r\n").await;
+                                } else {
+                                    match ctx.request(EncryptedTellRequest {
+                                        from: name.clone(),
+                                        to: target.to_string(),
+                                        ciphertext: ciphertext.to_string(),
+                                    }).resolve().await {
+                                        Ok(Ok(())) => {
+                                            // Whisper routed successfully
                                         }
                                         Ok(Err(err)) => {
                                             write_line(&writer, &format!("*** {err}\r\n")).await;
@@ -360,6 +447,26 @@ pub fn blueprint(pending_sockets: PendingSockets) -> Blueprint {
                                     }).resolve().await {
                                         Ok(Ok(())) => {
                                             // Whisper sent successfully
+                                        }
+                                        Ok(Err(err)) => {
+                                            write_line(&writer, &format!("*** {err}\r\n")).await;
+                                        }
+                                        Err(err) => {
+                                            write_line(&writer, &format!("*** Error: {err}\r\n")).await;
+                                        }
+                                    }
+                                }
+                            } else if let Some(rest) = line.strip_prefix("/kick ") {
+                                let victim = rest.trim();
+                                if victim.is_empty() {
+                                    write_line(&writer, "Usage: /kick <user>\r\n").await;
+                                } else {
+                                    match ctx.request(KickRequest {
+                                        kicker: name.clone(),
+                                        victim: victim.to_string(),
+                                    }).resolve().await {
+                                        Ok(Ok(())) => {
+                                            write_line(&writer, &format!("*** You kicked {victim}\r\n")).await;
                                         }
                                         Ok(Err(err)) => {
                                             write_line(&writer, &format!("*** {err}\r\n")).await;

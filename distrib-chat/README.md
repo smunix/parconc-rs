@@ -290,95 +290,95 @@ In Alice's terminal:
 
 ---
 
-## 8. Automated Integration Test
+## 8. Automated Integration Tests
 
-To verify the entire cluster workflow programmatically, run:
+To verify both standard cluster routing and the End-to-End Encryption (E2EE) pipeline programmatically, run:
 
 ```bash
+# Run all automated integration and unit tests
+cargo test -- --nocapture
+
+# Run the dedicated cluster E2EE integration test
+cargo test --test e2ee_test -- --nocapture
+
+# Run the standard cluster synchronization test
 cargo test --test cluster_test -- --nocapture
 ```
 
 ---
 
-## 9. Reflection: Designing End-to-End Encryption (E2EE)
+## 9. End-to-End Encryption (E2EE) & Dedicated Terminal Client
 
-In the current architecture, private whispers (`/tell`) are protected by node-to-node transport if TLS is configured, but the **servers/cluster nodes themselves have complete visibility into the plaintext** of whispers when routing `ChatMessage::Tell` and `ClusterSend`.
+The distributed chat system features full **End-to-End Encryption (E2EE)** for private whispers between users across the cluster. Intermediate server nodes act purely as blind routing relays: they forward opaque base64 ciphertext payloads and have **zero visibility** into the plaintext contents, nor do they possess private keys.
 
-Implementing true **End-to-End Encryption (E2EE)** guarantees that even compromised, untrusted, or rogue cluster nodes cannot inspect or tamper with private communications between two clients.
+### Cryptographic Stack & Primitives
+- **Key Agreement (Diffie-Hellman)**: **X25519** (`x25519-dalek`) provides elliptic curve Diffie-Hellman operations for client identity keys and per-message ephemeral keys.
+- **Key Derivation**: **HKDF-SHA256** (`hkdf` + `sha2`) derives high-entropy 256-bit symmetric keys from the Diffie-Hellman shared secret.
+- **Authenticated Symmetric Cipher**: **ChaCha20-Poly1305 AEAD** (`chacha20poly1305`) encrypts message contents with a random 96-bit (12-byte) nonce per message, ensuring both confidentiality and tamper detection.
+- **Wire Encoding**: Standard Base64 (`base64`) serializes the binary payload into ASCII strings compatible with telnet/TCP streams.
 
-### 1. Threat Model & Design Goals
-- **Untrusted Cluster**: Intermediate nodes must act only as blind routing relays.
-- **Confidentiality**: Only the intended recipient can decrypt the message content.
-- **Integrity & Authenticity**: Messages cannot be forged or tampered with by nodes or external attackers without detection.
-- **Forward Secrecy**: Compromising a client's long-term key at time $T$ does not decrypt past messages sent before $T$.
-- **Post-Compromise Security (Self-Healing)**: Once an attacker loses access, the session automatically heals and restores confidentiality.
+### Wire Payload & Forward Secrecy
+Each encrypted whisper packs:
+$$\text{Payload} = \text{EphemeralPublicKey}_{32\text{B}} \parallel \text{Nonce}_{12\text{B}} \parallel (\text{Ciphertext} \parallel \text{Poly1305Tag}_{16\text{B}})$$
 
-### 2. Cryptographic Primitives & Key Exchange
-To achieve state-of-the-art E2EE (analogous to Signal or Matrix), the system would implement:
+Because the sender generates a fresh ephemeral X25519 keypair for every whisper:
+1. **Forward Secrecy**: Even if a client's long-term identity key were compromised in the future, past whispered messages cannot be decrypted because ephemeral private keys are discarded immediately after message transmission.
+2. **Tamper Resistance**: Any tampering or bit modification on intermediate nodes causes Poly1305 AEAD authentication to fail on the recipient client.
 
-1. **Identity & Ephemeral Keys**:
-   - Each client generates an Identity Key Pair ($IK$) using **Ed25519** (for signatures) and **X25519** (for Diffie-Hellman).
-   - Each client generates pre-signed ephemeral keys ($SPK$) and one-time prekeys ($OPK$).
-2. **Key Directory on Server**:
-   - The central `server` actor group stores public key bundles for each registered `ClientName`:
-     ```rust
-     struct ClientKeyBundle {
-         identity_key: [u8; 32],
-         signed_prekey: [u8; 32],
-         prekey_signature: [u8; 64],
-     }
-     ```
-   - Clients publish their public keys during registration (`RegisterClientWithKeys`).
-   - A new command `/keys <user>` or automatic key fetch allows Alice to obtain Bob's public key bundle.
-3. **Session Initialization via X3DH**:
-   - When Alice wants to whisper to Bob, her client executes the **Extended Triple Diffie-Hellman (X3DH)** protocol:
-     $$\text{SharedSecret} = \text{KDF}(DH(IK_A, SPK_B) \parallel DH(EK_A, IK_B) \parallel DH(EK_A, SPK_B))$$
-   - Alice creates a session state and sends an initial encrypted handshake message.
+### Distributed Public Key Directory
+- **Registration**: When a client logs in, it can publish its public key immediately (`<username> <base64_pubkey>`) or via `/pubkey <base64_pubkey>`.
+- **Cluster Synchronization**: The server broadcasts `ClusterClientKey` and includes registered keys in `ClusterNewClient` and `ClusterSync`, replicating the public key directory across all nodes in the cluster.
+- **Directory Query**: Any client can query the public key of a connected user via `/getkey <username>`.
+- **Status Badges**: The `/users` command displays connected clients with `[e2ee]` capability badges (e.g. `Alice [e2ee], Bob [e2ee], Charlie`).
 
-### 3. Symmetric Encryption & The Double Ratchet
-Once the session is established:
-- Alice and Bob use the **Double Ratchet Algorithm**:
-  - **DH Ratchet**: Every message exchange includes a new ephemeral public key, deriving fresh ratchet root keys.
-  - **Symmetric-Key KDF Ratchet**: Derives a unique message encryption key per message.
-- **AEAD Cipher**: **ChaCha20-Poly1305** or **AES-256-GCM** encrypts the payload, providing authenticated encryption with associated data (AEAD).
+### Blind Cluster Routing
+- When sending an encrypted message, the client executes `/etell <user> <base64_ciphertext>`.
+- The central `server` actor wraps this in `ChatMessage::EncryptedTell` and forwards it via `ClusterSend { to, msg }` over the LZ4-compressed `system.network` inter-node link.
+- The recipient node receives the opaque message and delivers `*E2EE* <sender>: <base64_ciphertext>` directly to the recipient's socket.
+- Intermediate nodes inspect only the destination username `to` for routing; the message content remains encrypted at all times.
 
-### 4. Protocol & Message Flow Changes
-The protocol in `protocol.rs` would evolve from plain strings to encrypted envelopes:
+---
 
-```rust
-#[message(part)]
-pub struct EncryptedWhisperPayload {
-    pub sender_ephemeral_key: [u8; 32],
-    pub sequence_number: u32,
-    pub previous_chain_length: u32,
-    pub nonce: [u8; 12],
-    pub ciphertext: Vec<u8>,
-    pub tag: [u8; 16],
-}
+## 10. Dedicated Terminal Client (`distrib-chat-client`)
 
-#[message]
-pub struct ClusterSendEncrypted {
-    pub to: ClientName,
-    pub from: ClientName,
-    pub payload: EncryptedWhisperPayload,
-}
+A dedicated async terminal client is provided under `src/bin/client.rs`.
+
+### Client Features
+- Automatically generates local X25519 identity keypairs upon launch (private key never leaves the client process).
+- Automatically registers public key with the cluster upon connection.
+- Performs transparent peer public key discovery (`/getkey <user>`) and maintains an in-memory peer key cache.
+- Transparently encrypts outgoing whispers (`/tell <user> <message>`) and decrypts incoming whispers (`*E2EE* <sender>: <ciphertext>`), printing decrypted text in colored terminal output.
+- Queues whispers while waiting for asynchronous peer public key lookups.
+
+### Running the Dedicated Client
+
+Open two separate terminal windows (with nodes running on ports 44441 and 44442):
+
+**Terminal 1 (Alice on Node 1):**
+```bash
+cargo run --bin distrib-chat-client -- Alice 127.0.0.1:44441
 ```
 
-- When Node 1 receives `/tell Bob secret` from Alice:
-  1. Alice's client encrypts `"secret"` into `EncryptedWhisperPayload`.
-  2. Node 1 only sees recipient `to: "Bob"` and opaque ciphertext bytes.
-  3. Node 1 routes `ClusterSendEncrypted` to Node 2 via `elfo-network`.
-  4. Node 2 delivers the payload to Bob's client actor.
-  5. Bob's client actor verifies AEAD authentication and decrypts using its local Double Ratchet state.
-  6. Neither Node 1 nor Node 2 ever holds the decryption key.
+**Terminal 2 (Bob on Node 2):**
+```bash
+cargo run --bin distrib-chat-client -- Bob 127.0.0.1:44442
+```
 
-### 5. Architectural Considerations: Fat Client vs. Server Proxy Actor
-There are two potential deployment models for E2EE:
+### Interactive Client Commands
+```text
+/tell <user> <message>   - Send an End-to-End Encrypted whisper (transparent key exchange)
+/plain <user> <message>  - Send an unencrypted whisper
+/users                   - List connected users across the cluster and their E2EE capabilities
+/getkey <user>           - Query and cache a user's E2EE public key
+/keys                    - Display all locally cached peer public keys
+/mykey                   - Display your local X25519 public key
+/kick <user>             - Kick a user from the chat
+/quit                    - Disconnect and exit
+<message>                - Broadcast public message to all connected clients
+```
 
-1. **Client-Side Terminal App (Pure E2EE)**:
-   - The user runs a dedicated terminal CLI client (e.g. built with `ratatui` + `x25519-dalek`).
-   - All cryptographic keys remain strictly on the user's local machine; the server never receives private keys.
-   - Raw telnet cannot easily perform X25519/ChaCha20 operations, so a dedicated client binary or TLS client with E2EE extension is required.
-2. **Actor-Mediated Zero-Trust Whispers**:
-   - If clients connect via plain telnet, the client actor in `clients` can manage local session keys, but this places trust in the local node hosting that client actor (trusted ingress node, untrusted cluster network).
-   - For true E2EE against compromised nodes, the cryptographic boundary must terminate inside the client software on the end-user machine.
+### Full Interoperability with Telnet/Netcat
+Standard unencrypted clients (`nc` or `telnet`) can continue to connect alongside E2EE clients:
+- Standard clients participate in public chat broadcasts, `/users`, `/tell` (plain), `/kick`, etc.
+- In `/users`, standard clients can see which users support E2EE.
+- If an unencrypted client receives an E2EE whisper, it sees the opaque ciphertext `*E2EE* <sender>: <base64>`, confirming that non-E2EE parties cannot read private messages.

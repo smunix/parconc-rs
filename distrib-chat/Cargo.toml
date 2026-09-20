@@ -2,6 +2,17 @@
 name = "distrib-chat"
 version = "0.1.0"
 edition = "2024"
+[lib]
+name = "distrib_chat"
+path = "src/lib.rs"
+
+[[bin]]
+name = "distrib-chat"
+path = "src/main.rs"
+
+[[bin]]
+name = "distrib-chat-client"
+path = "src/bin/client.rs"
 
 [dependencies]
 elfo = { path = "/home/smunix/Projects/oss/rs/elfo/elfo", features = ["full", "network", "unstable"] }
@@ -14,3 +25,10 @@ anyhow = "1.0"
 humantime-serde = "1"
 derive_more = { version = "2", features = ["display", "from"] }
 futures = "0.3"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+chacha20poly1305 = "0.10"
+rand = "0.8"
+base64 = "0.22"
+sha2 = "0.10"
+hkdf = "0.12"
+

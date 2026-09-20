@@ -1,12 +1,10 @@
-//! Protocol definitions for the distributed chat server.
+//! Protocol definitions for the distributed chat server and E2EE messaging.
 //!
-//! Corresponds to `Message` and `PMessage` in the Haskell implementation (`chat.hs`):
-//! - Client chat messages: Notices, Whispers/Tells, and Broadcasts.
-//! - Internode synchronization: Registering new clients, disconnects, whispers, and kicks across nodes.
-//!
-//! In `elfo`, types annotated with `#[message]` automatically derive `Serialize`,
-//! `Deserialize`, `Debug`, and `Clone`, allowing transparent serialization
-//! across cluster nodes via `elfo-network`.
+//! Corresponds to `Message` and `PMessage` in the Haskell implementation (`chat.hs`),
+//! extended with End-to-End Encryption (E2EE) primitives:
+//! - Client chat messages: Notices, Whispers/Tells, Encrypted Whispers (E2EE), and Broadcasts.
+//! - Internode synchronization: Registering clients with public keys, key directory sync,
+//!   opaque encrypted routing, whispers, and kicks across nodes.
 
 use elfo::prelude::*;
 
@@ -19,12 +17,19 @@ pub type ClientName = String;
 
 /// Messages formatted and sent to the client's terminal / TCP connection.
 /// Corresponds to Haskell's `data Message = Notice ... | Tell ... | Broadcast ...`
+/// extended with `EncryptedTell` for E2EE payloads.
 #[message(part)]
 pub enum ChatMessage {
     /// System notices, e.g. "*** Alice has connected", "*** Bob was kicked"
     Notice(String),
-    /// Private messages / whispers: "*Alice*: hello"
+    /// Unencrypted private messages / whispers: "*Alice*: hello"
     Tell { from: ClientName, msg: String },
+    /// End-to-End Encrypted private whisper containing opaque base64 AEAD ciphertext.
+    /// Intermediate servers route this payload without ability to decrypt.
+    EncryptedTell {
+        from: ClientName,
+        ciphertext: String,
+    },
     /// Public chat broadcasts: "<Alice>: hello everyone"
     Broadcast { from: ClientName, msg: String },
 }
@@ -35,6 +40,9 @@ impl ChatMessage {
         match self {
             ChatMessage::Notice(msg) => format!("*** {msg}\r\n"),
             ChatMessage::Tell { from, msg } => format!("*{from}*: {msg}\r\n"),
+            ChatMessage::EncryptedTell { from, ciphertext } => {
+                format!("*E2EE* {from}: {ciphertext}\r\n")
+            }
             ChatMessage::Broadcast { from, msg } => format!("<{from}>: {msg}\r\n"),
         }
     }
@@ -44,34 +52,34 @@ impl ChatMessage {
 // Cluster Synchronization Protocol (Exchanged between nodes via elfo-network)
 // -----------------------------------------------------------------------------
 
-/// Sent across nodes when a new client connects and claims a username.
-///
-/// In Haskell: `MsgNewClient ClientName ProcessId`
-/// In elfo, each node server actor tracks the origin node of remote clients.
+/// Sent across nodes when a new client connects and claims a username,
+/// optionally publishing their public X25519 identity key.
 #[message]
 pub struct ClusterNewClient {
     pub name: ClientName,
+    pub pubkey: Option<String>,
+}
+
+/// Broadcast to update or register a client's public key across the cluster.
+#[message]
+pub struct ClusterClientKey {
+    pub name: ClientName,
+    pub pubkey: String,
 }
 
 /// Sent across nodes when a client disconnects or quits.
-///
-/// In Haskell: `MsgClientDisconnected ClientName ProcessId`
 #[message]
 pub struct ClusterClientDisconnected {
     pub name: ClientName,
 }
 
 /// Broadcasts a chat message to all connected clients on all nodes.
-///
-/// In Haskell: `MsgBroadcast Message`
 #[message]
 pub struct ClusterBroadcast {
     pub msg: ChatMessage,
 }
 
-/// Routes a private message (whisper) destined for a client hosted on a remote node.
-///
-/// In Haskell: `MsgSend ClientName Message`
+/// Routes a private message (plain or encrypted whisper) destined for a client hosted on a remote node.
 #[message]
 pub struct ClusterSend {
     pub to: ClientName,
@@ -79,16 +87,21 @@ pub struct ClusterSend {
 }
 
 /// Requests kicking a user across the cluster.
-///
-/// In Haskell: `MsgKick ClientName ClientName` (victim, kicker)
 #[message]
 pub struct ClusterKick {
     pub victim: ClientName,
     pub by: ClientName,
 }
 
-/// Periodic or on-connect state synchronization of active client names across the cluster.
+/// Client descriptor for cluster synchronization.
+#[message(part)]
+pub struct ClientInfo {
+    pub name: ClientName,
+    pub pubkey: Option<String>,
+}
+
+/// Periodic or on-connect state synchronization of active clients and public keys.
 #[message]
 pub struct ClusterSync {
-    pub clients: Vec<ClientName>,
+    pub clients: Vec<ClientInfo>,
 }

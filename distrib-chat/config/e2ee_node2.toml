@@ -1,0 +1,6 @@
+# Configuration for automated E2EE test node 2
+[system.network]
+listen = ["tcp://127.0.0.1:9502"]
+discovery.predefined = ["tcp://127.0.0.1:9501"]
+discovery.attempt_interval = "200ms"
+compression.lz4 = "Preferred"
