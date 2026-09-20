@@ -105,3 +105,52 @@ pub struct ClientInfo {
 pub struct ClusterSync {
     pub clients: Vec<ClientInfo>,
 }
+
+// -----------------------------------------------------------------------------
+// Dynamic Discovery & Gossip Protocol (Approach A: Seed Peering)
+// -----------------------------------------------------------------------------
+
+/// Peer entry describing an active cluster node.
+#[message(part)]
+#[derive(PartialEq, Eq)]
+pub struct PeerEntry {
+    pub node_name: String,
+    pub listen_addr: String,
+    pub is_seed: bool,
+}
+
+/// Request sent by a node to query active peers in the cluster.
+#[message]
+pub struct GossipGetPeers {
+    pub sender_node: String,
+    pub sender_listen_addr: String,
+    pub is_seed: bool,
+}
+
+/// Response/broadcast containing known cluster peers.
+#[message]
+pub struct GossipPeersRoster {
+    pub sender_node: String,
+    pub peers: Vec<PeerEntry>,
+}
+
+/// Lightweight heartbeat ping to verify peer liveness.
+#[message]
+pub struct ClusterPing {
+    pub sender_node: String,
+    pub sequence: u64,
+}
+
+/// Heartbeat response to confirm liveness.
+#[message]
+pub struct ClusterPong {
+    pub sender_node: String,
+    pub sequence: u64,
+}
+
+/// Notification broadcast when a peer node has gracefully disconnected or timed out.
+#[message]
+pub struct ClusterNodeLeft {
+    pub node_name: String,
+    pub reason: String,
+}

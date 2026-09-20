@@ -1,0 +1,10 @@
+[system.network]
+listen = ["tcp://127.0.0.1:9601"]
+discovery.attempt_interval = "200ms"
+compression.lz4 = "Preferred"
+
+[discovery_gossip]
+node_name = "gossip_seed_us_east"
+listen_addr = "tcp://127.0.0.1:9601"
+is_seed = true
+seeds = ["tcp://127.0.0.1:9601"]

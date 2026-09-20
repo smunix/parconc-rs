@@ -26,7 +26,7 @@ use crate::{
     },
     protocol::{
         ChatMessage, ClientInfo, ClientName, ClusterBroadcast, ClusterClientDisconnected,
-        ClusterClientKey, ClusterKick, ClusterNewClient, ClusterSend, ClusterSync,
+        ClusterClientKey, ClusterKick, ClusterNewClient, ClusterNodeLeft, ClusterSend, ClusterSync,
     },
 };
 
@@ -55,8 +55,8 @@ pub fn blueprint() -> Blueprint {
         // Table of all clients currently known to the cluster: local and remote.
         let mut clients: HashMap<ClientName, ClientState> = HashMap::new();
 
-        // Periodically sync local client list across the cluster (every 3 seconds)
-        ctx.attach(Interval::new(SyncTick)).start(Duration::from_secs(3));
+        // Periodically sync local client list across the cluster (every 1 second)
+        ctx.attach(Interval::new(SyncTick)).start(Duration::from_secs(1));
 
         while let Some(envelope) = ctx.recv().await {
             msg!(match envelope {
@@ -394,6 +394,19 @@ pub fn blueprint() -> Blueprint {
                                     pubkey: info.pubkey,
                                 }
                             });
+                    }
+                }
+
+                ClusterNodeLeft { node_name, reason } => {
+                    info!(node = %node_name, %reason, "Cluster node disconnected");
+                    let notice = ChatMessage::Notice(format!("Node '{node_name}' left the cluster ({reason})"));
+                    for state in clients.values() {
+                        if let ClientEntry::Local(id) = state.entry {
+                            let _ = ctx.send(DeliverToClient {
+                                client_id: id,
+                                msg: notice.clone(),
+                            }).await;
+                        }
                     }
                 }
 

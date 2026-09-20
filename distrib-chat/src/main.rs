@@ -23,7 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("============================================================");
 
     let pending_sockets = Arc::new(Mutex::new(HashMap::new()));
-    let topology = build_topology(&config_path, tcp_port, pending_sockets);
+    let topology = build_topology(&node_name, &config_path, tcp_port, pending_sockets);
 
     // Start elfo runtime and run until terminated
     elfo::init::start(topology).await;

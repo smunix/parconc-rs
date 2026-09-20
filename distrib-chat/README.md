@@ -64,10 +64,11 @@ Each node runs an identical actor topology defined in [`src/lib.rs`](file:///hom
 
 ```mermaid
 flowchart TD
-    subgraph UsEast ["us-east (TCP Port 44441)"]
+    subgraph UsEast ["us-east (TCP Port 44441) - Seed Node"]
         Acceptor1["acceptor actor<br/>(TCP Listener 0.0.0.0:44441)"]
         Clients1["clients group<br/>(Sharded by ClientId via MapRouter)"]
         Server1["server actor<br/>(Central Node Coordinator)"]
+        Gossip1["discovery_gossip actor<br/>(Seed Peering & Heartbeats)"]
         Network1["system.network<br/>(elfo-network with LZ4)"]
         Config1["system.configurers<br/>(Entrypoint: config/us-east.toml)"]
 
@@ -75,19 +76,26 @@ flowchart TD
         Clients1 -->|"Register / Broadcast / Tell / Kick / ListUsers"| Server1
         Server1 -->|"DeliverToClient / KickClient"| Clients1
         Server1 <-->|"ClusterBroadcast / ClusterSend / ClusterKick / ClusterSync"| Network1
+        Gossip1 -->|"UpdateConfig (Dynamic Peers)"| Network1
+        Gossip1 <-->|"GossipGetPeers / GossipPeersRoster / Heartbeats"| Network1
+        Gossip1 -->|"ClusterNodeLeft (Peer Timeout)"| Server1
         Config1 -.->|"Config updates"| Acceptor1
         Config1 -.->|"Config updates"| Server1
         Config1 -.->|"Config updates"| Network1
     end
 
-    subgraph CaEast ["ca-east (TCP Port 44442)"]
+    subgraph CaEast ["ca-east (TCP Port 44442) - Dynamic Node"]
         Network2["system.network<br/>(elfo-network with LZ4)"]
+        Gossip2["discovery_gossip actor<br/>(Seed Peering & Heartbeats)"]
         Server2["server actor<br/>(Central Node Coordinator)"]
         Clients2["clients group<br/>(Sharded by ClientId via MapRouter)"]
         Acceptor2["acceptor actor<br/>(TCP Listener 0.0.0.0:44442)"]
         Config2["system.configurers<br/>(Entrypoint: config/ca-east.toml)"]
 
         Network2 <-->|"ClusterBroadcast / ClusterSend / ClusterKick / ClusterSync"| Server2
+        Gossip2 -->|"UpdateConfig (Dynamic Peers)"| Network2
+        Gossip2 <-->|"GossipGetPeers / GossipPeersRoster / Heartbeats"| Network2
+        Gossip2 -->|"ClusterNodeLeft (Peer Timeout)"| Server2
         Server2 -->|"DeliverToClient / KickClient"| Clients2
         Clients2 -->|"Register / Broadcast / Tell / Kick / ListUsers"| Server2
         Acceptor2 -->|"NewClientConnection { client_id }"| Clients2
@@ -99,7 +107,7 @@ flowchart TD
     Alice["Alice (Telnet / Ratatui TUI)"] <-->|"TCP Stream"| Clients1
     Bob["Bob (Telnet / Ratatui TUI)"] <-->|"TCP Stream"| Clients2
 
-    Network1 <-->|"TCP Mesh with LZ4 (127.0.0.1:9301 &harr; 9302)"| Network2
+    Network1 <-->|"Dynamic TCP Mesh with LZ4 (127.0.0.1:9301 &harr; 9302)"| Network2
 ```
 
 ### Actor Groups Explained
@@ -115,12 +123,20 @@ flowchart TD
    - Central node directory. Tracks whether each known nickname is `Local(ClientId)` or `Remote`, along with optional E2EE public keys.
    - Responds to client registration requests, verifies nickname uniqueness across the cluster, and handles `/users` directory queries.
    - Routes whispers, kicks, and broadcasts locally and across the Elfo network mesh.
-   - Hosts a periodic timer tick (`SyncTick`, every 3s) broadcasting `ClusterSync` for state convergence.
-4. **`system.network` (Elfo Battery)**:
-   - Establishes and monitors inter-node TCP connections using predefined discovery targets.
-   - Transparently multiplexes, serializes, and deserializes Elfo messages sent to `topology.remote("server")`.
+   - Hosts a periodic timer tick (`SyncTick`, every 1s) broadcasting `ClusterSync` for state convergence.
+   - Listens for `ClusterNodeLeft` notifications from `discovery_gossip` when remote cluster nodes disconnect.
+4. **`discovery_gossip` (Local Group, Dynamic Peer Discovery - Approach A)**:
+   - Implements decentralized gossip-based seed peering and dynamic mesh discovery.
+   - Seeds act as stable initial contacts (`us-east`, `eu`); dynamic nodes boot with only seed addresses.
+   - Regularly broadcasts `GossipGetPeers` and exchanges `GossipPeersRoster` with connected nodes.
+   - Upon discovering new peer transports, builds an updated network configuration and issues `UpdateConfig` directly to `system.network`.
+   - Runs periodic heartbeat pings (`ClusterPing` / `ClusterPong`) and failure detection timers, publishing `ClusterNodeLeft` if peers become unresponsive.
+5. **`system.network` (Elfo Battery)**:
+   - Establishes and monitors inter-node TCP connections using discovery targets.
+   - Receives runtime `UpdateConfig` messages from `discovery_gossip`, dynamically calculating transport diffs and opening new TCP connections without restarting.
+   - Transparently multiplexes, serializes, and deserializes Elfo messages sent to `topology.remote("server")` and `topology.remote("discovery_gossip")`.
    - Negotiates and applies LZ4 frame compression (`compression.lz4 = "Preferred"`).
-5. **`system.configurers` (Elfo Battery Entrypoint)**:
+6. **`system.configurers` (Elfo Battery Entrypoint)**:
    - Dynamically loads and validates node configuration from TOML files, distributing config sections to groups at startup.
 
 ---
@@ -322,6 +338,57 @@ sequenceDiagram
     C_Alice-->>Alice: "*** You kicked Bob\r\n*** Bob has disconnected\r\n"
 ```
 
+---
+
+### 4.6 Dynamic Gossip Discovery & Seed Peering Flow (Approach A)
+When a dynamic node (`ca-west`) joins the cluster, it boots with only the stable seed addresses (`us-east`). It exchanges peer rosters with the seed, discovers non-seed peers (`us-west`), issues runtime `UpdateConfig` to `system.network`, and dynamically establishes a direct TCP mesh:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Gossip_CW as discovery_gossip (ca-west)
+    participant Net_CW as system.network (ca-west)
+    participant Net_Seed as system.network (us-east, Seed)
+    participant Gossip_Seed as discovery_gossip (us-east, Seed)
+    participant Net_UW as system.network (us-west)
+    participant Gossip_UW as discovery_gossip (us-west)
+
+    Note over Gossip_CW,Net_Seed: Step 1: Boot & Seed Rendezvous
+    Gossip_CW->>Net_CW: Dial Seed Address (tcp://127.0.0.1:9301)
+    Net_CW->>Net_Seed: TCP Handshake & LZ4 Negotiation (9301)
+    Net_Seed-->>Net_CW: Established
+    
+    Note over Gossip_CW,Gossip_Seed: Step 2: Peer Roster Gossip
+    Gossip_CW->>Net_CW: GossipGetPeers { sender: "ca-west", addr: "tcp://127.0.0.1:9303" }
+    Net_CW->>Net_Seed: Internode Forward
+    Net_Seed->>Gossip_Seed: GossipGetPeers
+    Gossip_Seed->>Gossip_Seed: Record "ca-west" in peers table
+    Gossip_Seed->>Net_Seed: GossipPeersRoster { peers: [us-east, ca-east, us-west, eu] }
+    Net_Seed->>Net_CW: Internode Forward
+    Net_CW->>Gossip_CW: GossipPeersRoster
+
+    Note over Gossip_CW,Net_CW: Step 3: Dynamic Network Reconfiguration
+    Gossip_CW->>Gossip_CW: Diff active transports: discovered "us-west" (9304)
+    Gossip_CW->>Net_CW: UpdateConfig (predefined = [9301, 9304, 9305])
+    Net_CW->>Net_CW: Discovery::on_update_config() diffs transports
+    Net_CW->>Net_UW: Outbound TCP Connection to 127.0.0.1:9304
+    Net_UW-->>Net_CW: Connection Established (Direct Peer Mesh)
+
+    Note over Gossip_CW,Gossip_UW: Step 4: Heartbeats & Resilience
+    loop Every 2 Seconds
+        Gossip_CW->>Net_CW: ClusterPing { sender: "ca-west", seq: N }
+        Net_CW->>Net_UW: Direct TCP Frame
+        Net_UW->>Gossip_UW: ClusterPing
+        Gossip_UW-->>Net_UW: ClusterPong { sender: "us-west", seq: N }
+        Net_UW-->>Net_CW: Direct TCP Frame
+        Net_CW-->>Gossip_CW: ClusterPong (refresh last_seen)
+    end
+
+    Note over Gossip_CW,Gossip_UW: If Seed (us-east) shuts down, direct ca-west <-> us-west mesh remains fully active!
+```
+
+---
+
 ## 5. Message Protocol
 
 ### Terminal / Local Client Messages ([`src/protocol.rs`](file:///home/smunix/Projects/scratchpad/rs/parconc-examples/distrib-chat/src/protocol.rs))
@@ -339,55 +406,92 @@ sequenceDiagram
 - `ClusterKick { victim, by }`: Directs the remote node hosting `victim` to terminate that client's connection.
 - `ClusterSync { clients }`: Periodic cluster reconciliation ensuring convergence even after network hiccups.
 
+### Dynamic Discovery & Gossip Protocol Messages (Approach A)
+- `PeerEntry`: Descriptor for an active node (`node_name`, `listen_addr`, `is_seed`).
+- `GossipGetPeers { sender_node, sender_listen_addr, is_seed }`: Broadcast to query connected peers for their known cluster rosters.
+- `GossipPeersRoster { sender_node, peers }`: Broadcast responding with all currently active peer entries.
+- `ClusterPing { sender_node, sequence }`: Periodic heartbeat ping to verify peer liveness.
+- `ClusterPong { sender_node, sequence }`: Heartbeat response confirming peer liveness and resetting failure counters.
+- `ClusterNodeLeft { node_name, reason }`: Broadcast notification published when a peer disconnects gracefully or exceeds the heartbeat timeout window.
+
 ---
 
-## 6. Configuration & Compression
+## 6. Configuration & Dynamic Seed Peering
 
 Network frame compression is activated by adding `compression.lz4 = "Preferred"` under `[system.network]` in each node's TOML file.
 
-During initial node discovery and handshake, `elfo-network` exchanges capabilities and automatically enables LZ4 framing:
-```
-INFO system.network/server:... - connection picked up ... capabilities=caps(compression=LZ4)
-```
+Dynamic discovery is configured via `[discovery_gossip]`:
+- **Seed Nodes (`us-east`, `eu`)**: Set `is_seed = true`. They connect to each other to maintain a redundant seed backbone.
+- **Dynamic Nodes (`ca-east`, `ca-west`, `us-west`)**: Set `is_seed = false` and list only the seeds in `discovery.predefined`. They dynamically discover each other via gossip at runtime, eliminating hardcoded N-to-N configuration files.
 
-### `config/us-east.toml`
+### Seed Node 1: `config/us-east.toml`
 ```toml
 [system.network]
 listen = ["tcp://127.0.0.1:9301"]
-discovery.predefined = ["tcp://127.0.0.1:9302"]
+discovery.predefined = ["tcp://127.0.0.1:9305"]
+discovery.attempt_interval = "500ms"
 compression.lz4 = "Preferred"
+
+[discovery_gossip]
+node_name = "us-east"
+is_seed = true
+seeds = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9305"]
 ```
 
-### `config/ca-east.toml`
-```toml
-[system.network]
-listen = ["tcp://127.0.0.1:9302"]
-discovery.predefined = ["tcp://127.0.0.1:9301"]
-compression.lz4 = "Preferred"
-```
-
-### `config/ca-west.toml`
-```toml
-[system.network]
-listen = ["tcp://127.0.0.1:9303"]
-discovery.predefined = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9302"]
-compression.lz4 = "Preferred"
-```
-
-### `config/us-west.toml`
-```toml
-[system.network]
-listen = ["tcp://127.0.0.1:9304"]
-discovery.predefined = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9302"]
-compression.lz4 = "Preferred"
-```
-
-### `config/eu.toml`
+### Seed Node 2: `config/eu.toml`
 ```toml
 [system.network]
 listen = ["tcp://127.0.0.1:9305"]
-discovery.predefined = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9302"]
+discovery.predefined = ["tcp://127.0.0.1:9301"]
+discovery.attempt_interval = "500ms"
 compression.lz4 = "Preferred"
+
+[discovery_gossip]
+node_name = "eu"
+is_seed = true
+seeds = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9305"]
+```
+
+### Dynamic Node: `config/ca-east.toml` (Connects to Seeds Only)
+```toml
+[system.network]
+listen = ["tcp://127.0.0.1:9302"]
+discovery.predefined = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9305"]
+discovery.attempt_interval = "500ms"
+compression.lz4 = "Preferred"
+
+[discovery_gossip]
+node_name = "ca-east"
+is_seed = false
+seeds = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9305"]
+```
+
+### Dynamic Node: `config/ca-west.toml` (Connects to Seeds Only)
+```toml
+[system.network]
+listen = ["tcp://127.0.0.1:9303"]
+discovery.predefined = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9305"]
+discovery.attempt_interval = "500ms"
+compression.lz4 = "Preferred"
+
+[discovery_gossip]
+node_name = "ca-west"
+is_seed = false
+seeds = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9305"]
+```
+
+### Dynamic Node: `config/us-west.toml` (Connects to Seeds Only)
+```toml
+[system.network]
+listen = ["tcp://127.0.0.1:9304"]
+discovery.predefined = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9305"]
+discovery.attempt_interval = "500ms"
+compression.lz4 = "Preferred"
+
+[discovery_gossip]
+node_name = "us-west"
+is_seed = false
+seeds = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9305"]
 ```
 
 ---

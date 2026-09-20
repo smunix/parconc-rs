@@ -1,8 +1,13 @@
-# Configuration for Cluster Node: us-east
+# Configuration for Cluster Node: us-east (Seed Node 1)
 # elfo-network clustering settings
 
 [system.network]
 listen = ["tcp://127.0.0.1:9301"]
-discovery.predefined = ["tcp://127.0.0.1:9302"]
+discovery.predefined = ["tcp://127.0.0.1:9305"]
 discovery.attempt_interval = "500ms"
 compression.lz4 = "Preferred"
+
+[discovery_gossip]
+node_name = "us-east"
+is_seed = true
+seeds = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9305"]

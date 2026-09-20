@@ -1,0 +1,11 @@
+[system.network]
+listen = ["tcp://127.0.0.1:9602"]
+discovery.predefined = ["tcp://127.0.0.1:9601"]
+discovery.attempt_interval = "200ms"
+compression.lz4 = "Preferred"
+
+[discovery_gossip]
+node_name = "gossip_dynamic_ca_west"
+listen_addr = "tcp://127.0.0.1:9602"
+is_seed = false
+seeds = ["tcp://127.0.0.1:9601"]

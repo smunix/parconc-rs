@@ -1,8 +1,13 @@
-# Configuration for Cluster Node: ca-west
-# Connects to us-east and ca-east
+# Configuration for Cluster Node: ca-west (Dynamic Node)
+# elfo-network clustering settings: connects to seeds only
 
 [system.network]
 listen = ["tcp://127.0.0.1:9303"]
-discovery.predefined = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9302"]
+discovery.predefined = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9305"]
 discovery.attempt_interval = "500ms"
 compression.lz4 = "Preferred"
+
+[discovery_gossip]
+node_name = "ca-west"
+is_seed = false
+seeds = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9305"]

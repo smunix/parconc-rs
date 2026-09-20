@@ -1,8 +1,13 @@
-# Configuration for Cluster Node: eu
-# Connects to us-east and ca-east
+# Configuration for Cluster Node: eu (Seed Node 2)
+# elfo-network clustering settings
 
 [system.network]
 listen = ["tcp://127.0.0.1:9305"]
-discovery.predefined = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9302"]
+discovery.predefined = ["tcp://127.0.0.1:9301"]
 discovery.attempt_interval = "500ms"
 compression.lz4 = "Preferred"
+
+[discovery_gossip]
+node_name = "eu"
+is_seed = true
+seeds = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9305"]
