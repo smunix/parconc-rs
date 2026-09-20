@@ -1,4 +1,4 @@
-# Configuration for Cluster Node 1
+# Configuration for Cluster Node: us-east
 # elfo-network clustering settings
 
 [system.network]

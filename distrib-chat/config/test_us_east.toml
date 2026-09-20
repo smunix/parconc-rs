@@ -1,4 +1,4 @@
-# Configuration for automated test node 1
+# Configuration for automated test node: us-east
 [system.network]
 listen = ["tcp://127.0.0.1:9401"]
 discovery.attempt_interval = "200ms"

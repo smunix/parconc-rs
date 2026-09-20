@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
-    let node_name = args.next().unwrap_or_else(|| "node1".to_string());
+    let node_name = args.next().unwrap_or_else(|| "us-east".to_string());
     let tcp_port: u16 = args.next().and_then(|s| s.parse().ok()).unwrap_or(44444);
 
     let config_path = format!("config/{node_name}.toml");

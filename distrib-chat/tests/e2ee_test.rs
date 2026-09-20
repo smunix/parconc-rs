@@ -22,24 +22,24 @@ impl Drop for NodeProcess {
 fn test_cluster_end_to_end_encryption() {
     let bin_path = env!("CARGO_BIN_EXE_distrib-chat");
 
-    // Spawn Node 1 (TCP chat port 46661, cluster port 9501)
-    let node1 = Command::new(bin_path)
-        .arg("e2ee_node1")
+    // Spawn us-east node (TCP chat port 46661, cluster port 9501)
+    let node_us_east = Command::new(bin_path)
+        .arg("e2ee_us_east")
         .arg("46661")
         .spawn()
-        .expect("failed to spawn e2ee_node1");
-    let _node1_guard = NodeProcess(node1);
+        .expect("failed to spawn e2ee_us_east");
+    let _node_us_east_guard = NodeProcess(node_us_east);
 
-    // Give node 1 time to bind
+    // Give us-east time to bind
     thread::sleep(Duration::from_millis(500));
 
-    // Spawn Node 2 (TCP chat port 46662, cluster port 9502)
-    let node2 = Command::new(bin_path)
-        .arg("e2ee_node2")
+    // Spawn ca-east node (TCP chat port 46662, cluster port 9502)
+    let node_ca_east = Command::new(bin_path)
+        .arg("e2ee_ca_east")
         .arg("46662")
         .spawn()
-        .expect("failed to spawn e2ee_node2");
-    let _node2_guard = NodeProcess(node2);
+        .expect("failed to spawn e2ee_ca_east");
+    let _node_ca_east_guard = NodeProcess(node_ca_east);
 
     // Wait for cluster discovery to settle
     thread::sleep(Duration::from_secs(2));
@@ -51,8 +51,8 @@ fn test_cluster_end_to_end_encryption() {
     let (bob_secret, bob_public) = generate_identity_keypair();
     let bob_pub_b64 = encode_pubkey(&bob_public);
 
-    // 1. Connect Alice to Node 1 with public key registration
-    let mut alice = TcpStream::connect("127.0.0.1:46661").expect("failed to connect to node 1");
+    // 1. Connect Alice to us-east with public key registration
+    let mut alice = TcpStream::connect("127.0.0.1:46661").expect("failed to connect to us-east");
     let mut alice_reader = BufReader::new(alice.try_clone().unwrap());
     let mut line = String::new();
 
@@ -72,8 +72,8 @@ fn test_cluster_end_to_end_encryption() {
         }
     }
 
-    // 2. Connect Bob to Node 2 with public key registration
-    let mut bob = TcpStream::connect("127.0.0.1:46662").expect("failed to connect to node 2");
+    // 2. Connect Bob to ca-east with public key registration
+    let mut bob = TcpStream::connect("127.0.0.1:46662").expect("failed to connect to ca-east");
     let mut bob_reader = BufReader::new(bob.try_clone().unwrap());
 
     line.clear();
@@ -126,7 +126,7 @@ fn test_cluster_end_to_end_encryption() {
     let decoded_bob_pub = decode_pubkey(&fetched_bob_key).expect("valid decoded pubkey");
     assert_eq!(decoded_bob_pub.as_bytes(), bob_public.as_bytes());
 
-    // 5. Bob fetches Alice's public key from Node 2
+    // 5. Bob fetches Alice's public key from ca-east
     bob.write_all(b"/getkey Alice\n").unwrap();
     bob.flush().unwrap();
     let mut fetched_alice_key = None;
@@ -149,7 +149,7 @@ fn test_cluster_end_to_end_encryption() {
     alice.write_all(etell_cmd.as_bytes()).unwrap();
     alice.flush().unwrap();
 
-    // 7. Bob receives opaque ciphertext on Node 2
+    // 7. Bob receives opaque ciphertext on ca-east
     let mut received_ciphertext = None;
     for _ in 0..10 {
         line.clear();

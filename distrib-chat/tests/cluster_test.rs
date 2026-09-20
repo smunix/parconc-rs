@@ -19,30 +19,30 @@ impl Drop for NodeProcess {
 fn test_distributed_chat_two_nodes() {
     let bin_path = env!("CARGO_BIN_EXE_distrib-chat");
 
-    // Spawn Node 1 (TCP chat port 45551, cluster port 9401)
-    let node1 = Command::new(bin_path)
-        .arg("test_node1")
+    // Spawn us-east node (TCP chat port 45551, cluster port 9401)
+    let node_us_east = Command::new(bin_path)
+        .arg("test_us_east")
         .arg("45551")
         .spawn()
-        .expect("failed to spawn test_node1");
-    let _node1_guard = NodeProcess(node1);
+        .expect("failed to spawn test_us_east");
+    let _node_us_east_guard = NodeProcess(node_us_east);
 
-    // Give node 1 time to bind before node 2 initiates discovery
+    // Give us-east time to bind before ca-east initiates discovery
     thread::sleep(Duration::from_millis(500));
 
-    // Spawn Node 2 (TCP chat port 45552, cluster port 9402)
-    let node2 = Command::new(bin_path)
-        .arg("test_node2")
+    // Spawn ca-east node (TCP chat port 45552, cluster port 9402)
+    let node_ca_east = Command::new(bin_path)
+        .arg("test_ca_east")
         .arg("45552")
         .spawn()
-        .expect("failed to spawn test_node2");
-    let _node2_guard = NodeProcess(node2);
+        .expect("failed to spawn test_ca_east");
+    let _node_ca_east_guard = NodeProcess(node_ca_east);
 
     // Wait for nodes to initialize and connect to each other
     thread::sleep(Duration::from_secs(2));
 
-    // Connect Alice to Node 1
-    let mut alice = TcpStream::connect("127.0.0.1:45551").expect("failed to connect to node 1");
+    // Connect Alice to us-east
+    let mut alice = TcpStream::connect("127.0.0.1:45551").expect("failed to connect to us-east");
     let mut alice_reader = BufReader::new(alice.try_clone().unwrap());
     let mut line = String::new();
 
@@ -76,8 +76,8 @@ fn test_distributed_chat_two_nodes() {
         }
     }
 
-    // Connect Bob to Node 2
-    let mut bob = TcpStream::connect("127.0.0.1:45552").expect("failed to connect to node 2");
+    // Connect Bob to ca-east
+    let mut bob = TcpStream::connect("127.0.0.1:45552").expect("failed to connect to ca-east");
     let mut bob_reader = BufReader::new(bob.try_clone().unwrap());
 
     line.clear();

@@ -1,4 +1,4 @@
-# Configuration for automated test node 2
+# Configuration for automated test node: ca-east
 [system.network]
 listen = ["tcp://127.0.0.1:9402"]
 discovery.predefined = ["tcp://127.0.0.1:9401"]

@@ -1,8 +1,8 @@
-# Configuration for Cluster Node 3
-# Connects to Node 1 and Node 2
+# Configuration for Cluster Node: eu
+# Connects to us-east and ca-east
 
 [system.network]
-listen = ["tcp://127.0.0.1:9303"]
+listen = ["tcp://127.0.0.1:9305"]
 discovery.predefined = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9302"]
 discovery.attempt_interval = "500ms"
 compression.lz4 = "Preferred"

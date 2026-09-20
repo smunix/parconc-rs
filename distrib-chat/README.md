@@ -11,7 +11,7 @@ This project is an idiomatic Rust port of the **Distributed Chat Server** proble
 The distributed chat problem simulates an IRC/Slack-like chat network spanning multiple distributed server instances across a cluster.
 
 ### Core Requirements
-1. **Multi-Node Clustering**: Chat servers run as autonomous cluster nodes (e.g. Node 1, Node 2, Node 3) communicating over TCP.
+1. **Multi-Node Clustering**: Chat servers run as autonomous cluster nodes (e.g. `us-east`, `ca-east`, `ca-west`, `us-west`, `eu`) communicating over TCP.
 2. **Network Compression**: Efficient internode frame transmission using native LZ4 compression negotiated transparently via `elfo-network`.
 3. **Client Ingestion**: Users connect via standard telnet or netcat (`nc <host> <port>`) to *any* node in the cluster.
 4. **Nickname Registration & Collision Handling**:
@@ -21,7 +21,7 @@ The distributed chat problem simulates an IRC/Slack-like chat network spanning m
    - Any connected client can list all other clients currently active across the cluster to discover who is available to message.
    - Output: `*** Connected users: Bob, Charlie` or `*** No other users are currently connected.`.
 6. **Global Chat Broadcasts**:
-   - Any message typed by a user on Node 1 is immediately relayed to all local clients on Node 1 *and* all remote clients on Node 2, Node 3, etc.
+   - Any message typed by a user on `us-east` is immediately relayed to all local clients on `us-east` *and* all remote clients on `ca-east`, `ca-west`, etc.
    - Format: `<Alice>: Hello world!`.
 7. **Private Whispers (`/tell <user> <message>`)**:
    - Directed messaging routed specifically to the target client regardless of which node they are connected to.
@@ -64,12 +64,12 @@ Each node runs an identical actor topology defined in [`src/lib.rs`](file:///hom
 
 ```mermaid
 flowchart TD
-    subgraph Node1 ["Node 1 (TCP Port 44441)"]
+    subgraph UsEast ["us-east (TCP Port 44441)"]
         Acceptor1["acceptor actor<br/>(TCP Listener 0.0.0.0:44441)"]
         Clients1["clients group<br/>(Sharded by ClientId via MapRouter)"]
         Server1["server actor<br/>(Central Node Coordinator)"]
         Network1["system.network<br/>(elfo-network with LZ4)"]
-        Config1["system.configurers<br/>(Entrypoint: config/node1.toml)"]
+        Config1["system.configurers<br/>(Entrypoint: config/us-east.toml)"]
 
         Acceptor1 -->|"NewClientConnection { client_id }"| Clients1
         Clients1 -->|"Register / Broadcast / Tell / Kick / ListUsers"| Server1
@@ -80,12 +80,12 @@ flowchart TD
         Config1 -.->|"Config updates"| Network1
     end
 
-    subgraph Node2 ["Node 2 (TCP Port 44442)"]
+    subgraph CaEast ["ca-east (TCP Port 44442)"]
         Network2["system.network<br/>(elfo-network with LZ4)"]
         Server2["server actor<br/>(Central Node Coordinator)"]
         Clients2["clients group<br/>(Sharded by ClientId via MapRouter)"]
         Acceptor2["acceptor actor<br/>(TCP Listener 0.0.0.0:44442)"]
-        Config2["system.configurers<br/>(Entrypoint: config/node2.toml)"]
+        Config2["system.configurers<br/>(Entrypoint: config/ca-east.toml)"]
 
         Network2 <-->|"ClusterBroadcast / ClusterSend / ClusterKick / ClusterSync"| Server2
         Server2 -->|"DeliverToClient / KickClient"| Clients2
@@ -136,11 +136,11 @@ sequenceDiagram
     actor Alice as Alice (TCP Client)
     participant Acceptor as acceptor
     participant Clients as clients (ClientId: 1)
-    participant Server1 as server (Node 1)
-    participant Net1 as system.network (Node 1)
-    participant Net2 as system.network (Node 2)
-    participant Server2 as server (Node 2)
-    participant Bob as clients (Bob on Node 2)
+    participant Server1 as server (us-east)
+    participant Net1 as system.network (us-east)
+    participant Net2 as system.network (ca-east)
+    participant Server2 as server (ca-east)
+    participant Bob as clients (Bob on ca-east)
 
     Alice->>Acceptor: TCP Connect (SYN)
     Acceptor->>Acceptor: client_id = NEXT_CLIENT_ID.fetch_add(1)
@@ -175,14 +175,14 @@ Public chat messages typed by any client are fanned out to both local clients on
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Alice as Alice (Node 1)
+    actor Alice as Alice (us-east)
     participant C_Alice as clients (Alice)
-    participant S1 as server (Node 1)
-    participant C_Charlie as clients (Charlie, Node 1)
-    participant Net1 as system.network (Node 1)
-    participant Net2 as system.network (Node 2)
-    participant S2 as server (Node 2)
-    participant C_Bob as clients (Bob, Node 2)
+    participant S1 as server (us-east)
+    participant C_Charlie as clients (Charlie, us-east)
+    participant Net1 as system.network (us-east)
+    participant Net2 as system.network (ca-east)
+    participant S2 as server (ca-east)
+    participant C_Bob as clients (Bob, ca-east)
 
     Alice->>C_Alice: "Hello cluster!\r\n"
     C_Alice->>S1: BroadcastRequest { from: "Alice", msg: "Hello cluster!" }
@@ -209,14 +209,14 @@ Private messages are addressed to a specific nickname. If the recipient is hoste
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Alice as Alice (Node 1)
-    participant C_Alice as clients (Alice, Node 1)
-    participant S1 as server (Node 1)
-    participant Net1 as system.network (Node 1)
-    participant Net2 as system.network (Node 2)
-    participant S2 as server (Node 2)
-    participant C_Bob as clients (Bob, Node 2)
-    actor Bob as Bob (Node 2)
+    actor Alice as Alice (us-east)
+    participant C_Alice as clients (Alice, us-east)
+    participant S1 as server (us-east)
+    participant Net1 as system.network (us-east)
+    participant Net2 as system.network (ca-east)
+    participant S2 as server (ca-east)
+    participant C_Bob as clients (Bob, ca-east)
+    actor Bob as Bob (ca-east)
 
     Alice->>C_Alice: "/tell Bob Meet me at noon\r\n"
     C_Alice->>S1: TellRequest { from: "Alice", to: "Bob", msg: "Meet me at noon" }
@@ -245,14 +245,14 @@ With E2EE enabled, clients perform client-side ephemeral Diffie-Hellman key agre
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Alice as Alice (TUI Client)
-    participant C_Alice as clients (Node 1)
-    participant S1 as server (Node 1)
-    participant Net1 as system.network (Node 1)
-    participant Net2 as system.network (Node 2)
-    participant S2 as server (Node 2)
-    participant C_Bob as clients (Node 2)
-    actor Bob as Bob (TUI Client)
+    actor Alice as Alice (TUI Client, us-east)
+    participant C_Alice as clients (us-east)
+    participant S1 as server (us-east)
+    participant Net1 as system.network (us-east)
+    participant Net2 as system.network (ca-east)
+    participant S2 as server (ca-east)
+    participant C_Bob as clients (ca-east)
+    actor Bob as Bob (TUI Client, ca-east)
 
     Note over Alice,Bob: Step 1: Key Discovery & Caching
     Alice->>C_Alice: "/getkey Bob\r\n"
@@ -293,14 +293,14 @@ Any client can kick another user anywhere in the cluster. When the kick reaches 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Alice as Alice (Moderator on Node 1)
-    participant C_Alice as clients (Alice, Node 1)
-    participant S1 as server (Node 1)
-    participant Net1 as system.network (Node 1)
-    participant Net2 as system.network (Node 2)
-    participant S2 as server (Node 2)
-    participant C_Bob as clients (Bob, Node 2)
-    actor Bob as Bob (Victim on Node 2)
+    actor Alice as Alice (Moderator on us-east)
+    participant C_Alice as clients (Alice, us-east)
+    participant S1 as server (us-east)
+    participant Net1 as system.network (us-east)
+    participant Net2 as system.network (ca-east)
+    participant S2 as server (ca-east)
+    participant C_Bob as clients (Bob, ca-east)
+    actor Bob as Bob (Victim on ca-east)
 
     Alice->>C_Alice: "/kick Bob\r\n"
     C_Alice->>S1: KickRequest { kicker: "Alice", victim: "Bob" }
@@ -350,7 +350,7 @@ During initial node discovery and handshake, `elfo-network` exchanges capabiliti
 INFO system.network/server:... - connection picked up ... capabilities=caps(compression=LZ4)
 ```
 
-### `config/node1.toml`
+### `config/us-east.toml`
 ```toml
 [system.network]
 listen = ["tcp://127.0.0.1:9301"]
@@ -358,7 +358,7 @@ discovery.predefined = ["tcp://127.0.0.1:9302"]
 compression.lz4 = "Preferred"
 ```
 
-### `config/node2.toml`
+### `config/ca-east.toml`
 ```toml
 [system.network]
 listen = ["tcp://127.0.0.1:9302"]
@@ -366,10 +366,26 @@ discovery.predefined = ["tcp://127.0.0.1:9301"]
 compression.lz4 = "Preferred"
 ```
 
-### `config/node3.toml`
+### `config/ca-west.toml`
 ```toml
 [system.network]
 listen = ["tcp://127.0.0.1:9303"]
+discovery.predefined = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9302"]
+compression.lz4 = "Preferred"
+```
+
+### `config/us-west.toml`
+```toml
+[system.network]
+listen = ["tcp://127.0.0.1:9304"]
+discovery.predefined = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9302"]
+compression.lz4 = "Preferred"
+```
+
+### `config/eu.toml`
+```toml
+[system.network]
+listen = ["tcp://127.0.0.1:9305"]
 discovery.predefined = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9302"]
 compression.lz4 = "Preferred"
 ```
@@ -388,21 +404,31 @@ cargo build --release
 ```
 
 ### 2. Start the Cluster Nodes
-Open two (or three) separate terminal windows:
+Open separate terminal windows for each geographic cluster node:
 
-**Terminal 1 (Node 1):**
+**Terminal 1 (us-east):**
 ```bash
-target/release/distrib-chat node1 44441
+target/release/distrib-chat us-east 44441
 ```
 
-**Terminal 2 (Node 2):**
+**Terminal 2 (ca-east):**
 ```bash
-target/release/distrib-chat node2 44442
+target/release/distrib-chat ca-east 44442
 ```
 
-**Terminal 3 (Optional Node 3):**
+**Terminal 3 (ca-west):**
 ```bash
-target/release/distrib-chat node3 44443
+target/release/distrib-chat ca-west 44443
+```
+
+**Terminal 4 (us-west):**
+```bash
+target/release/distrib-chat us-west 44444
+```
+
+**Terminal 5 (eu):**
+```bash
+target/release/distrib-chat eu 44445
 ```
 
 You will see logs indicating that `system.network` has established LZ4-compressed data channels:
@@ -415,7 +441,7 @@ INFO acceptor/_ - Chat server listening for telnet clients addr=0.0.0.0:44441
 
 ## 8. Interactive Walkthrough
 
-### Connecting Alice to Node 1
+### Connecting Alice to `us-east`
 In another terminal:
 ```bash
 nc 127.0.0.1 44441
@@ -435,7 +461,7 @@ Querying other connected users while alone:
 *** No other users are currently connected.
 ```
 
-### Connecting Bob to Node 2
+### Connecting Bob to `ca-east`
 In another terminal:
 ```bash
 nc 127.0.0.1 44442
@@ -449,7 +475,7 @@ Available commands: /users, /tell <user> <msg>, /kick <user>, /quit
 *** Bob has connected
 ```
 
-**Back on Alice's terminal (Node 1)**, Alice instantly receives:
+**Back on Alice's terminal (`us-east`)**, Alice instantly receives:
 ```text
 *** Bob has connected
 ```
@@ -468,11 +494,11 @@ And Bob queries `/users`:
 ### Global Broadcast
 In Bob's terminal:
 ```text
-Hello from Node 2!
+Hello from ca-east!
 ```
-Alice on Node 1 receives:
+Alice on `us-east` receives:
 ```text
-<Bob>: Hello from Node 2!
+<Bob>: Hello from ca-east!
 ```
 
 ### Private Whisper Across Nodes
@@ -481,10 +507,10 @@ In Alice's terminal:
 /tell Bob secret message across nodes
 ```
 - Alice sees: `*Alice*: secret message across nodes`
-- Bob on Node 2 sees: `*Alice*: secret message across nodes`
+- Bob on `ca-east` sees: `*Alice*: secret message across nodes`
 
 ### Duplicate Nickname Rejection
-Try connecting a third client to Node 2 and entering `Alice`:
+Try connecting a third client to `ca-east` and entering `Alice`:
 ```text
 What is your name?
 Alice
@@ -554,9 +580,9 @@ flowchart TD
     end
 
     subgraph Relays ["Blind Cluster Relays (Zero-Knowledge)"]
-        WireMsg --> Node1_Relay["Node 1 (server)<br/>Inspects only 'Bob' routing key"]
-        Node1_Relay -->|"ClusterSend { to: 'Bob', msg }<br/>(TCP + LZ4 Mesh)"| Node2_Relay["Node 2 (server)<br/>Forwards to Bob's socket"]
-        Node2_Relay --> WireDelivery["*E2EE* Alice: &lt;base64_payload&gt;"]
+        WireMsg --> UsEast_Relay["us-east (server)<br/>Inspects only 'Bob' routing key"]
+        UsEast_Relay -->|"ClusterSend { to: 'Bob', msg }<br/>(TCP + LZ4 Mesh)"| CaEast_Relay["ca-east (server)<br/>Forwards to Bob's socket"]
+        CaEast_Relay --> WireDelivery["*E2EE* Alice: &lt;base64_payload&gt;"]
     end
 
     subgraph Recipient ["Recipient (Bob's Client)"]
@@ -665,19 +691,19 @@ The interface utilizes a responsive multi-pane layout:
 
 Start two cluster nodes:
 ```bash
-# Terminal 1: Node 1
-cargo run --bin distrib-chat -- node1 44441
+# Terminal 1: us-east
+cargo run --bin distrib-chat -- us-east 44441
 
-# Terminal 2: Node 2
-cargo run --bin distrib-chat -- node2 44442
+# Terminal 2: ca-east
+cargo run --bin distrib-chat -- ca-east 44442
 ```
 
 Launch the Ratatui TUI clients:
 ```bash
-# Terminal 3: Alice on Node 1
+# Terminal 3: Alice on us-east
 cargo run --bin distrib-chat-client -- Alice 127.0.0.1:44441
 
-# Terminal 4: Bob on Node 2
+# Terminal 4: Bob on ca-east
 cargo run --bin distrib-chat-client -- Bob 127.0.0.1:44442
 ```
 

@@ -1,0 +1,8 @@
+# Configuration for Cluster Node: ca-west
+# Connects to us-east and ca-east
+
+[system.network]
+listen = ["tcp://127.0.0.1:9303"]
+discovery.predefined = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9302"]
+discovery.attempt_interval = "500ms"
+compression.lz4 = "Preferred"

@@ -1,4 +1,4 @@
-# Configuration for automated E2EE test node 1
+# Configuration for automated E2EE test node: us-east
 [system.network]
 listen = ["tcp://127.0.0.1:9501"]
 discovery.attempt_interval = "200ms"
