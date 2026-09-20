@@ -79,7 +79,7 @@ flowchart TD
         Telnet2["Telnet / nc (Bob)"] <==>|"TCP Stream"| C2
     end
 
-    Net1 <====="TCP Cluster Mesh with LZ4 (9301 <-> 9302)"=====> Net2
+    Net1 <==>|"TCP Cluster Mesh with LZ4 (9301 <-> 9302)"| Net2
 ```
 
 ### Actor Groups Explained
