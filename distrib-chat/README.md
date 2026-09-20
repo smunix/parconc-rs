@@ -507,6 +507,22 @@ seeds = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9305"]
 cargo build --release
 ```
 
+### CLI Command Options (Clap)
+Both server and client binaries use **Clap** for argument parsing:
+
+```text
+Usage: distrib-chat [OPTIONS] [NODE_NAME] [PORT]
+
+Arguments:
+  [NODE_NAME]          Node name corresponding to config/<NODE_NAME>.toml [default: us-east]
+  [PORT]               Chat client TCP port for incoming telnet / E2EE clients [default: 44444]
+
+Options:
+  -c, --config <FILE>  Explicit path to configuration file (defaults to config/<NODE_NAME>.toml)
+  -h, --help           Print help
+  -V, --version        Print version
+```
+
 ### 2. Start the Cluster Nodes
 Open separate terminal windows for each geographic cluster node:
 
@@ -792,6 +808,19 @@ The interface utilizes a responsive multi-pane layout:
 - **Terminal Safety**: Installs an emergency panic hook and clean exit handlers ensuring terminal raw mode and alternate screen are always restored.
 
 ### Running the Dedicated Client
+
+CLI Options (Clap):
+```text
+Usage: distrib-chat-client [OPTIONS] <NICKNAME> [SERVER]
+
+Arguments:
+  <NICKNAME>  Nickname / username for the chat session
+  [SERVER]    Chat server address in host:port format [default: 127.0.0.1:44441]
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
 
 Start two cluster nodes:
 ```bash

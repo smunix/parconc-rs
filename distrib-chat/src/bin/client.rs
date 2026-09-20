@@ -10,6 +10,7 @@
 //! - Graceful terminal setup and teardown with emergency panic hook restoration.
 
 use anyhow::Result;
+use clap::Parser;
 use crossterm::{
     event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
     execute,
@@ -30,7 +31,7 @@ use ratatui::{
 };
 use std::{
     collections::HashMap,
-    env, io,
+    io,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -188,13 +189,28 @@ impl App {
     }
 }
 
+/// Dedicated Terminal Client with Ratatui TUI and End-to-End Encryption (E2EE)
+#[derive(Parser, Debug)]
+#[command(
+    name = "distrib-chat-client",
+    about = "Dedicated Terminal Client with Ratatui TUI and End-to-End Encryption (E2EE)",
+    version
+)]
+struct Args {
+    /// Nickname / username for the chat session
+    #[arg(value_name = "NICKNAME")]
+    username: String,
+
+    /// Chat server address in host:port format
+    #[arg(value_name = "SERVER", default_value = "127.0.0.1:44441")]
+    server: String,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut args = env::args().skip(1);
-    let username = args
-        .next()
-        .expect("Usage: distrib-chat-client <nickname> [server_host:port]");
-    let server_addr = args.next().unwrap_or_else(|| "127.0.0.1:44441".to_string());
+    let args = Args::parse();
+    let username = args.username;
+    let server_addr = args.server;
 
     // 1. Generate local cryptographic keypair
     let (secret_key, public_key) = generate_identity_keypair();

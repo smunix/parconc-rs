@@ -2,17 +2,40 @@
 //!
 //! Launches a cluster node running elfo actor groups.
 
+use clap::Parser;
 use distrib_chat::build_topology;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Mutex;
 
+/// Distributed Chat Server Node
+#[derive(Parser, Debug)]
+#[command(
+    name = "distrib-chat",
+    about = "Distributed Chat Server Node running Elfo actor groups",
+    version
+)]
+struct Args {
+    /// Node name corresponding to config/<NODE_NAME>.toml (e.g. us-east, ca-east, ca-west, us-west, eu)
+    #[arg(value_name = "NODE_NAME", default_value = "us-east")]
+    node_name: String,
+
+    /// Chat client TCP port for incoming telnet / E2EE clients
+    #[arg(value_name = "PORT", default_value_t = 44444)]
+    tcp_port: u16,
+
+    /// Explicit path to configuration file (defaults to config/<NODE_NAME>.toml)
+    #[arg(short, long, value_name = "FILE")]
+    config: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = std::env::args().skip(1);
-    let node_name = args.next().unwrap_or_else(|| "us-east".to_string());
-    let tcp_port: u16 = args.next().and_then(|s| s.parse().ok()).unwrap_or(44444);
-
-    let config_path = format!("config/{node_name}.toml");
+    let args = Args::parse();
+    let node_name = args.node_name;
+    let tcp_port = args.tcp_port;
+    let config_path = args
+        .config
+        .unwrap_or_else(|| format!("config/{node_name}.toml"));
 
     println!("============================================================");
     println!(" Starting Distributed Chat Node: {node_name}");
