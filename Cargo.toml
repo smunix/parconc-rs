@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "distrib-chat",
+    "timetable",
+]
+resolver = "3"
