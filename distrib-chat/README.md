@@ -339,42 +339,90 @@ Because the sender generates a fresh ephemeral X25519 keypair for every whisper:
 
 ---
 
-## 10. Dedicated Terminal Client (`distrib-chat-client`)
+## 10. Modern Ratatui Terminal User Interface (`distrib-chat-client`)
 
-A dedicated async terminal client is provided under `src/bin/client.rs`.
+A full-fledged, modern Terminal User Interface (TUI) client built with **Ratatui** and **Crossterm** is provided under [`src/bin/client.rs`](file:///home/smunix/Projects/scratchpad/rs/parconc-examples/distrib-chat/src/bin/client.rs).
+
+### TUI Architecture & Layout
+The interface utilizes a responsive multi-pane layout:
+
+```text
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│  DISTRIBUTED CHAT    [End-to-End Encrypted (E2EE) Actor Mesh]                          │
+│  User: Alice  |  Server: 127.0.0.1:44441  |  X25519 Key: 8Zf...  |  Status: ● Connected│
+├─────────────────────────────────────────────────────────┬──────────────────────────────┤
+│ Messages (14) [Auto-Scroll]                             │ Online Users (2)             │
+│ [09:32:01] *** Alice has connected                      │ ● Alice [E2EE] (you)         │
+│ [09:32:05] *** Bob has connected                        │ ● Bob [E2EE]                 │
+│ [09:32:12] <Alice>: Hello cluster!                      ├──────────────────────────────┤
+│ [09:32:15] <Bob>: Hey Alice!                            │ Key Directory                │
+│ [09:32:20] [E2EE] Bob: Top secret whisper via ChaCha20  │ Cached Keys: 1               │
+│ [09:32:25] [E2EE -> Bob]: Encrypted reply received!     │ ✔ Bob                        │
+├─────────────────────────────────────────────────────────┴──────────────────────────────┤
+│ Message / Command                                                                      │
+│ > /tell Bob Secret whisper                                                             │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│ [Enter] Send | [/tell <user> <msg>] E2EE Whisper | [/users] Refresh | [PgUp/PgDn] Scroll | [Esc] Quit
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+- **Header Bar**: Displays current user, server address, local X25519 public key fingerprint, and cluster connection status.
+- **Messages Pane (Left, 75%)**:
+  - Color-coded chat history with UTC timestamps `[HH:MM:SS]`.
+  - `[E2EE]` badges for private whispers (incoming in green, outgoing in magenta).
+  - Cyan headers for public broadcasts `<User>`.
+  - Yellow italic text for cluster notices and Red bold text for alerts/errors.
+  - Smooth scrolling support (Auto-scroll to latest message by default, manual scrolling via `PgUp`/`PgDn` or `Up`/`Down`).
+- **Sidebar (Right, 25%)**:
+  - **Online Users**: Live list of active cluster participants, distinguishing E2EE-capable users (`● User [E2EE]`) from unencrypted clients (`○ User [plain]`). Automatically refreshed on join/leave events.
+  - **Key Directory**: Shows cached peer public keys and verified cryptographic contacts.
+- **Input Box**: Active text input with cursor support, command parsing, and live typing.
+- **Footer**: Keybinding hints and navigation reference.
 
 ### Client Features
-- Automatically generates local X25519 identity keypairs upon launch (private key never leaves the client process).
-- Automatically registers public key with the cluster upon connection.
-- Performs transparent peer public key discovery (`/getkey <user>`) and maintains an in-memory peer key cache.
-- Transparently encrypts outgoing whispers (`/tell <user> <message>`) and decrypts incoming whispers (`*E2EE* <sender>: <ciphertext>`), printing decrypted text in colored terminal output.
-- Queues whispers while waiting for asynchronous peer public key lookups.
+- **Zero-Knowledge Privacy**: Automatically generates local X25519 identity keypairs upon launch (private key never leaves process memory).
+- **Automatic Key Discovery**: Automatically registers public key with the cluster upon connection, queries peer public keys on demand (`/getkey <user>`), and caches them locally.
+- **Transparent Cryptography**: Automatically encrypts outgoing whispers (`/tell <user> <message>`) and decrypts incoming whispers (`*E2EE* <sender>: <ciphertext>`).
+- **Whisper Queueing**: Seamlessly queues outgoing whispers while awaiting asynchronous peer public key resolution from the server.
+- **Terminal Safety**: Installs an emergency panic hook and clean exit handlers ensuring terminal raw mode and alternate screen are always restored.
 
 ### Running the Dedicated Client
 
-Open two separate terminal windows (with nodes running on ports 44441 and 44442):
-
-**Terminal 1 (Alice on Node 1):**
+Start two cluster nodes:
 ```bash
-cargo run --bin distrib-chat-client -- Alice 127.0.0.1:44441
+# Terminal 1: Node 1
+cargo run --bin distrib-chat -- node1 44441
+
+# Terminal 2: Node 2
+cargo run --bin distrib-chat -- node2 44442
 ```
 
-**Terminal 2 (Bob on Node 2):**
+Launch the Ratatui TUI clients:
 ```bash
+# Terminal 3: Alice on Node 1
+cargo run --bin distrib-chat-client -- Alice 127.0.0.1:44441
+
+# Terminal 4: Bob on Node 2
 cargo run --bin distrib-chat-client -- Bob 127.0.0.1:44442
 ```
 
-### Interactive Client Commands
+### Interactive Client Commands & Keybindings
 ```text
 /tell <user> <message>   - Send an End-to-End Encrypted whisper (transparent key exchange)
 /plain <user> <message>  - Send an unencrypted whisper
-/users                   - List connected users across the cluster and their E2EE capabilities
+/users                   - Refresh connected users across the cluster
 /getkey <user>           - Query and cache a user's E2EE public key
 /keys                    - Display all locally cached peer public keys
 /mykey                   - Display your local X25519 public key
 /kick <user>             - Kick a user from the chat
 /quit                    - Disconnect and exit
 <message>                - Broadcast public message to all connected clients
+
+Keybindings:
+  Enter                  - Send current message or execute command
+  PgUp / Up              - Scroll message history upward (manual mode)
+  PgDn / Down            - Scroll message history downward (resumes auto-scroll at bottom)
+  Esc / Ctrl+C           - Disconnect and quit
 ```
 
 ### Full Interoperability with Telnet/Netcat

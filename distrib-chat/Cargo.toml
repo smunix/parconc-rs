@@ -31,4 +31,6 @@ rand = "0.8"
 base64 = "0.22"
 sha2 = "0.10"
 hkdf = "0.12"
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
 
