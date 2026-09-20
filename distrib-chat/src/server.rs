@@ -17,8 +17,8 @@ use tracing::{info, warn};
 
 use crate::{
     client::{
-        BroadcastRequest, ClientId, DeliverToClient, KickClient, KickRequest, RegisterClient,
-        TellRequest, UnregisterClient,
+        BroadcastRequest, ClientId, DeliverToClient, KickClient, KickRequest, ListUsersRequest,
+        RegisterClient, TellRequest, UnregisterClient,
     },
     protocol::{
         ChatMessage, ClientName, ClusterBroadcast, ClusterClientDisconnected, ClusterKick,
@@ -186,6 +186,12 @@ pub fn blueprint() -> Blueprint {
                             ctx.respond(token, Ok(()));
                         }
                     }
+                }
+
+                (ListUsersRequest, token) => {
+                    let mut user_list: Vec<ClientName> = clients.keys().cloned().collect();
+                    user_list.sort();
+                    ctx.respond(token, user_list);
                 }
 
                 // -------------------------------------------------------------

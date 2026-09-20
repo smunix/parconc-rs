@@ -1,0 +1,6 @@
+# Configuration for automated test node 2
+[system.network]
+listen = ["tcp://127.0.0.1:9402"]
+discovery.predefined = ["tcp://127.0.0.1:9401"]
+discovery.attempt_interval = "200ms"
+compression.lz4 = "Preferred"

@@ -19,20 +19,23 @@ impl Drop for NodeProcess {
 fn test_distributed_chat_two_nodes() {
     let bin_path = env!("CARGO_BIN_EXE_distrib-chat");
 
-    // Spawn Node 1 (TCP chat port 45551)
+    // Spawn Node 1 (TCP chat port 45551, cluster port 9401)
     let node1 = Command::new(bin_path)
-        .arg("node1")
+        .arg("test_node1")
         .arg("45551")
         .spawn()
-        .expect("failed to spawn node1");
+        .expect("failed to spawn test_node1");
     let _node1_guard = NodeProcess(node1);
 
-    // Spawn Node 2 (TCP chat port 45552)
+    // Give node 1 time to bind before node 2 initiates discovery
+    thread::sleep(Duration::from_millis(500));
+
+    // Spawn Node 2 (TCP chat port 45552, cluster port 9402)
     let node2 = Command::new(bin_path)
-        .arg("node2")
+        .arg("test_node2")
         .arg("45552")
         .spawn()
-        .expect("failed to spawn node2");
+        .expect("failed to spawn test_node2");
     let _node2_guard = NodeProcess(node2);
 
     // Wait for nodes to initialize and connect to each other
@@ -54,12 +57,24 @@ fn test_distributed_chat_two_nodes() {
     alice.write_all(b"Alice\n").unwrap();
     alice.flush().unwrap();
 
-    line.clear();
-    alice_reader.read_line(&mut line).unwrap();
-    assert!(
-        line.contains("Welcome to the distributed chat, Alice!"),
-        "Got: {line}"
-    );
+    loop {
+        line.clear();
+        alice_reader.read_line(&mut line).unwrap();
+        if line.contains("Alice has connected") {
+            break;
+        }
+    }
+
+    // Alice queries /users when alone
+    alice.write_all(b"/users\n").unwrap();
+    alice.flush().unwrap();
+    loop {
+        line.clear();
+        alice_reader.read_line(&mut line).unwrap();
+        if line.contains("No other users are currently connected") {
+            break;
+        }
+    }
 
     // Connect Bob to Node 2
     let mut bob = TcpStream::connect("127.0.0.1:45552").expect("failed to connect to node 2");
@@ -76,12 +91,44 @@ fn test_distributed_chat_two_nodes() {
     bob.write_all(b"Bob\n").unwrap();
     bob.flush().unwrap();
 
-    line.clear();
-    bob_reader.read_line(&mut line).unwrap();
-    assert!(
-        line.contains("Welcome to the distributed chat, Bob!"),
-        "Got: {line}"
-    );
+    loop {
+        line.clear();
+        bob_reader.read_line(&mut line).unwrap();
+        if line.contains("Bob has connected") {
+            break;
+        }
+    }
+
+    // Allow cluster synchronization
+    thread::sleep(Duration::from_millis(300));
+
+    // Alice queries /users and should see Bob
+    alice.write_all(b"/users\n").unwrap();
+    alice.flush().unwrap();
+    let mut found_bob_user = false;
+    for _ in 0..5 {
+        line.clear();
+        alice_reader.read_line(&mut line).unwrap();
+        if line.contains("Connected users: Bob") {
+            found_bob_user = true;
+            break;
+        }
+    }
+    assert!(found_bob_user, "Alice did not see Bob in /users");
+
+    // Bob queries /users and should see Alice
+    bob.write_all(b"/users\n").unwrap();
+    bob.flush().unwrap();
+    let mut found_alice_user = false;
+    for _ in 0..5 {
+        line.clear();
+        bob_reader.read_line(&mut line).unwrap();
+        if line.contains("Connected users: Alice") {
+            found_alice_user = true;
+            break;
+        }
+    }
+    assert!(found_alice_user, "Bob did not see Alice in /users");
 
     // Bob broadcasts a message across the cluster
     bob.write_all(b"Hello cluster from Bob!\n").unwrap();

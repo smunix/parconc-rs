@@ -110,6 +110,10 @@ pub struct KickRequest {
     pub victim: ClientName,
 }
 
+/// Request sent by a client actor to the server to list all active clients across the cluster.
+#[message(ret = Vec<ClientName>)]
+pub struct ListUsersRequest;
+
 /// Creates a `Blueprint` for the TCP acceptor actor group.
 ///
 /// Listens for telnet/netcat client connections on `tcp_port`.
@@ -281,7 +285,7 @@ pub fn blueprint(pending_sockets: PendingSockets) -> Blueprint {
 
                 write_line(
                     &writer,
-                    &format!("Welcome to the distributed chat, {name}!\r\nAvailable commands: /tell <user> <msg>, /kick <user>, /quit\r\n"),
+                    &format!("Welcome to the distributed chat, {name}!\r\nAvailable commands: /users, /tell <user> <msg>, /kick <user>, /quit\r\n"),
                 ).await;
 
                 // 2. Main message loop (corresponds to `runClient` & `handleMessage` in Haskell `chat.hs`)
@@ -301,6 +305,26 @@ pub fn blueprint(pending_sockets: PendingSockets) -> Blueprint {
 
                             if line == "/quit" {
                                 break;
+                            } else if line == "/users" || line == "/who" || line == "/list" {
+                                match ctx.request(ListUsersRequest).resolve().await {
+                                    Ok(all_users) => {
+                                        let other_users: Vec<String> = all_users
+                                            .into_iter()
+                                            .filter(|u| u != &name)
+                                            .collect();
+                                        if other_users.is_empty() {
+                                            write_line(&writer, "*** No other users are currently connected.\r\n").await;
+                                        } else {
+                                            write_line(
+                                                &writer,
+                                                &format!("*** Connected users: {}\r\n", other_users.join(", ")),
+                                            ).await;
+                                        }
+                                    }
+                                    Err(err) => {
+                                        write_line(&writer, &format!("*** Error retrieving users: {err}\r\n")).await;
+                                    }
+                                }
                             } else if let Some(rest) = line.strip_prefix("/kick ") {
                                 let victim = rest.trim();
                                 if victim.is_empty() {
