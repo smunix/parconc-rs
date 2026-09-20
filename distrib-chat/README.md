@@ -60,68 +60,288 @@ In Rust, **Elfo** provides a unified, actor-based architecture combining thread-
 
 ## 3. Elfo Cluster Topology & Architecture
 
-Each node runs an identical actor topology defined in [`src/main.rs`](file:///home/smunix/Projects/scratchpad/rs/parconc-examples/distrib-chat/src/main.rs):
+Each node runs an identical actor topology defined in [`src/lib.rs`](file:///home/smunix/Projects/scratchpad/rs/parconc-examples/distrib-chat/src/lib.rs) and instantiated in [`src/main.rs`](file:///home/smunix/Projects/scratchpad/rs/parconc-examples/distrib-chat/src/main.rs):
 
 ```mermaid
 flowchart TD
-    subgraph Node1 ["Node 1 (e.g. port 44441)"]
-        A1["acceptor actor<br/>(TCP 44441)"] -->|"NewClientConnection"| C1["clients group<br/>(sharded by ClientId)"]
-        Telnet1["Telnet / nc (Alice)"] <==>|"TCP Stream"| C1
-        C1 -->|"Register / ListUsers / Broadcast / Tell / Kick"| S1["server actor<br/>(Central Node Coordinator)"]
-        S1 -->|"DeliverToClient / KickClient"| C1
-        S1 <==>|"ClusterBroadcast / ClusterSend / ClusterKick"| Net1["system.network<br/>(elfo-network with LZ4)"]
+    subgraph Node1 ["Node 1 (TCP Port 44441)"]
+        Acceptor1["acceptor actor<br/>(TCP Listener 0.0.0.0:44441)"]
+        Clients1["clients group<br/>(Sharded by ClientId via MapRouter)"]
+        Server1["server actor<br/>(Central Node Coordinator)"]
+        Network1["system.network<br/>(elfo-network with LZ4)"]
+        Config1["system.configurers<br/>(Entrypoint: config/node1.toml)"]
+
+        Acceptor1 -->|"NewClientConnection { client_id }"| Clients1
+        Clients1 -->|"Register / Broadcast / Tell / Kick / ListUsers"| Server1
+        Server1 -->|"DeliverToClient / KickClient"| Clients1
+        Server1 <-->|"ClusterBroadcast / ClusterSend / ClusterKick / ClusterSync"| Network1
+        Config1 -.->|"Config updates"| Acceptor1
+        Config1 -.->|"Config updates"| Server1
+        Config1 -.->|"Config updates"| Network1
     end
 
-    subgraph Node2 ["Node 2 (e.g. port 44442)"]
-        Net2["system.network<br/>(elfo-network with LZ4)"] <==>|"ClusterBroadcast / ClusterSend / ClusterKick"| S2["server actor<br/>(Central Node Coordinator)"]
-        S2 -->|"DeliverToClient / KickClient"| C2["clients group<br/>(sharded by ClientId)"]
-        A2["acceptor actor<br/>(TCP 44442)"] -->|"NewClientConnection"| C2
-        Telnet2["Telnet / nc (Bob)"] <==>|"TCP Stream"| C2
+    subgraph Node2 ["Node 2 (TCP Port 44442)"]
+        Network2["system.network<br/>(elfo-network with LZ4)"]
+        Server2["server actor<br/>(Central Node Coordinator)"]
+        Clients2["clients group<br/>(Sharded by ClientId via MapRouter)"]
+        Acceptor2["acceptor actor<br/>(TCP Listener 0.0.0.0:44442)"]
+        Config2["system.configurers<br/>(Entrypoint: config/node2.toml)"]
+
+        Network2 <-->|"ClusterBroadcast / ClusterSend / ClusterKick / ClusterSync"| Server2
+        Server2 -->|"DeliverToClient / KickClient"| Clients2
+        Clients2 -->|"Register / Broadcast / Tell / Kick / ListUsers"| Server2
+        Acceptor2 -->|"NewClientConnection { client_id }"| Clients2
+        Config2 -.->|"Config updates"| Acceptor2
+        Config2 -.->|"Config updates"| Server2
+        Config2 -.->|"Config updates"| Network2
     end
 
-    Net1 <==>|"TCP Cluster Mesh with LZ4 (9301 <-> 9302)"| Net2
+    Alice["Alice (Telnet / Ratatui TUI)"] <-->|"TCP Stream"| Clients1
+    Bob["Bob (Telnet / Ratatui TUI)"] <-->|"TCP Stream"| Clients2
+
+    Network1 <-->|"TCP Mesh with LZ4 (127.0.0.1:9301 &harr; 9302)"| Network2
 ```
 
 ### Actor Groups Explained
 
-1. **`acceptor` (Local Group)**:
-   - Binds the TCP listener for chat clients (e.g., `0.0.0.0:44441`).
-   - For every incoming TCP connection, assigns a unique `ClientId` and sends `NewClientConnection { client_id }` to the `clients` group.
+1. **`acceptor` (Local Group, Singleton)**:
+   - Binds the TCP listener for incoming chat clients (e.g. `0.0.0.0:44441`).
+   - For every incoming connection, increments atomic `NEXT_CLIENT_ID`, stashes the `tokio::net::TcpStream` in `pending_sockets`, and fires `NewClientConnection { client_id }` toward the `clients` group.
 2. **`clients` (Local Sharded Group)**:
-   - Routed by `MapRouter` on `ClientId`. When `NewClientConnection` arrives for an unknown `ClientId`, Elfo automatically spawns a dedicated client actor.
-   - Attaches an async `Stream::generate` reader to asynchronously read newline-delimited commands from the TCP socket.
-   - Manages client authentication (`readName` protocol), command parsing (`/users`, `/tell`, `/kick`, `/quit`), and terminal writing.
-3. **`server` (Local Group)**:
-   - Central node directory. Tracks whether each known nickname is `Local(ClientId)` or `Remote`.
-   - Handles `ListUsersRequest` to return sorted list of all active cluster clients.
-   - Dispatches local deliveries, rejects duplicate names, and relays cluster events across `system.network`.
-   - Periodically reconciles cluster state via `ClusterSync` ticks.
+   - Configured with `elfo::routers::MapRouter` on `ClientId`. When `NewClientConnection` arrives for an unknown ID, Elfo dynamically instantiates a dedicated client actor.
+   - Extracts its `TcpStream` from `pending_sockets`, splits it into read and write halves, and attaches an asynchronous `Stream::generate` reader.
+   - Handles the login handshake (`What is your name?`), command parsing (`/users`, `/tell`, `/etell`, `/pubkey`, `/getkey`, `/kick`, `/quit`), and TCP socket writing.
+3. **`server` (Local Group, Singleton)**:
+   - Central node directory. Tracks whether each known nickname is `Local(ClientId)` or `Remote`, along with optional E2EE public keys.
+   - Responds to client registration requests, verifies nickname uniqueness across the cluster, and handles `/users` directory queries.
+   - Routes whispers, kicks, and broadcasts locally and across the Elfo network mesh.
+   - Hosts a periodic timer tick (`SyncTick`, every 3s) broadcasting `ClusterSync` for state convergence.
 4. **`system.network` (Elfo Battery)**:
-   - Handles TCP connection establishment, heartbeats (`Ping`/`Pong`), reconnect backoff, and transparent message serialization between cluster nodes.
-   - Negotiates and executes LZ4 frame compression.
-5. **`system.configurers` (Elfo Battery)**:
-   - Dynamically loads and validates node configuration from TOML files.
+   - Establishes and monitors inter-node TCP connections using predefined discovery targets.
+   - Transparently multiplexes, serializes, and deserializes Elfo messages sent to `topology.remote("server")`.
+   - Negotiates and applies LZ4 frame compression (`compression.lz4 = "Preferred"`).
+5. **`system.configurers` (Elfo Battery Entrypoint)**:
+   - Dynamically loads and validates node configuration from TOML files, distributing config sections to groups at startup.
 
 ---
 
-## 4. Message Protocol
+## 4. Protocol Interaction & Sequence Diagrams
+
+### 4.1 Client Connection, Handshake & Nickname Registration
+When a client connects over TCP, the `acceptor` registers the socket and hands off control to a dedicated `clients` actor instance. The client negotiates their nickname and optionally publishes their X25519 public key:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Alice as Alice (TCP Client)
+    participant Acceptor as acceptor
+    participant Clients as clients (ClientId: 1)
+    participant Server1 as server (Node 1)
+    participant Net1 as system.network (Node 1)
+    participant Net2 as system.network (Node 2)
+    participant Server2 as server (Node 2)
+    participant Bob as clients (Bob on Node 2)
+
+    Alice->>Acceptor: TCP Connect (SYN)
+    Acceptor->>Acceptor: client_id = NEXT_CLIENT_ID.fetch_add(1)
+    Acceptor->>Acceptor: pending_sockets.insert(1, tcp_stream)
+    Acceptor->>Clients: NewClientConnection { client_id: 1 }
+    Clients->>Clients: Elfo spawns actor for ClientId=1
+    Clients->>Clients: pending_sockets.remove(1) & split socket
+    Clients-->>Alice: "What is your name?\r\n"
+    Alice->>Clients: "Alice <base64_pubkey>\r\n"
+    Clients->>Server1: RegisterClient { client_id: 1, name: "Alice", pubkey: Some(...) }
+    
+    alt Nickname Already Taken
+        Server1-->>Clients: Err("The name 'Alice' is in use...")
+        Clients-->>Alice: "The name 'Alice' is in use, please choose another.\r\nWhat is your name?\r\n"
+    else Nickname Available
+        Server1->>Server1: clients.insert("Alice", Local(1), pubkey)
+        Server1-->>Clients: Ok(())
+        Server1->>Net1: ClusterNewClient { name: "Alice", pubkey: Some(...) }
+        Net1->>Net2: TCP Mesh (LZ4 Frame): ClusterNewClient
+        Net2->>Server2: ClusterNewClient { name: "Alice", pubkey: Some(...) }
+        Server2->>Server2: clients.insert("Alice", Remote, pubkey)
+        Server2->>Bob: DeliverToClient { msg: Notice("*** Alice has connected") }
+        Clients-->>Alice: "Welcome to the distributed chat, Alice!\r\nAvailable commands: ...\r\n"
+    end
+```
+
+---
+
+### 4.2 Global Chat Broadcast Flow
+Public chat messages typed by any client are fanned out to both local clients on the same node and all remote clients across the cluster mesh:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Alice as Alice (Node 1)
+    participant C_Alice as clients (Alice)
+    participant S1 as server (Node 1)
+    participant C_Charlie as clients (Charlie, Node 1)
+    participant Net1 as system.network (Node 1)
+    participant Net2 as system.network (Node 2)
+    participant S2 as server (Node 2)
+    participant C_Bob as clients (Bob, Node 2)
+
+    Alice->>C_Alice: "Hello cluster!\r\n"
+    C_Alice->>S1: BroadcastRequest { from: "Alice", msg: "Hello cluster!" }
+    
+    par Local Node Delivery
+        S1->>C_Alice: DeliverToClient { msg: Broadcast("<Alice>: Hello cluster!") }
+        C_Alice-->>Alice: "<Alice>: Hello cluster!\r\n"
+        S1->>C_Charlie: DeliverToClient { msg: Broadcast("<Alice>: Hello cluster!") }
+        C_Charlie-->>Charlie: "<Alice>: Hello cluster!\r\n"
+    and Remote Cluster Broadcast
+        S1->>Net1: ClusterBroadcast { msg: Broadcast("<Alice>: Hello cluster!") }
+        Net1->>Net2: TCP Mesh (LZ4 Compressed)
+        Net2->>S2: ClusterBroadcast { msg: Broadcast("<Alice>: Hello cluster!") }
+        S2->>C_Bob: DeliverToClient { msg: Broadcast("<Alice>: Hello cluster!") }
+        C_Bob-->>Bob: "<Alice>: Hello cluster!\r\n"
+    end
+```
+
+---
+
+### 4.3 Direct Private Whisper (`/tell`) Flow Across Nodes
+Private messages are addressed to a specific nickname. If the recipient is hosted on a remote cluster node, the whisper is routed via `ClusterSend`:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Alice as Alice (Node 1)
+    participant C_Alice as clients (Alice, Node 1)
+    participant S1 as server (Node 1)
+    participant Net1 as system.network (Node 1)
+    participant Net2 as system.network (Node 2)
+    participant S2 as server (Node 2)
+    participant C_Bob as clients (Bob, Node 2)
+    actor Bob as Bob (Node 2)
+
+    Alice->>C_Alice: "/tell Bob Meet me at noon\r\n"
+    C_Alice->>S1: TellRequest { from: "Alice", to: "Bob", msg: "Meet me at noon" }
+    
+    S1->>S1: Lookup "Bob" -> ClientEntry::Remote
+    
+    par Local Echo to Sender
+        S1->>C_Alice: DeliverToClient { msg: Tell { from: "Alice", msg: "Meet me at noon" } }
+        C_Alice-->>Alice: "*Alice*: Meet me at noon\r\n"
+    and Inter-Node Routed Dispatch
+        S1->>Net1: ClusterSend { to: "Bob", msg: Tell { from: "Alice", msg: "Meet me at noon" } }
+        Net1->>Net2: TCP Mesh (LZ4 Compressed)
+        Net2->>S2: ClusterSend { to: "Bob", msg: Tell { from: "Alice", msg: "Meet me at noon" } }
+        S2->>S2: Lookup "Bob" -> ClientEntry::Local(target_id)
+        S2->>C_Bob: DeliverToClient { client_id: target_id, msg: Tell { from: "Alice", msg: "Meet me at noon" } }
+        C_Bob-->>Bob: "*Alice*: Meet me at noon\r\n"
+    end
+    S1-->>C_Alice: Ok(())
+```
+
+---
+
+### 4.4 End-to-End Encrypted (E2EE) Whisper Flow (`/etell`)
+With E2EE enabled, clients perform client-side ephemeral Diffie-Hellman key agreement and symmetric AEAD encryption. Intermediate servers forward opaque Base64 ciphertexts blindly:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Alice as Alice (TUI Client)
+    participant C_Alice as clients (Node 1)
+    participant S1 as server (Node 1)
+    participant Net1 as system.network (Node 1)
+    participant Net2 as system.network (Node 2)
+    participant S2 as server (Node 2)
+    participant C_Bob as clients (Node 2)
+    actor Bob as Bob (TUI Client)
+
+    Note over Alice,Bob: Step 1: Key Discovery & Caching
+    Alice->>C_Alice: "/getkey Bob\r\n"
+    C_Alice->>S1: GetKeyRequest { target: "Bob" }
+    S1-->>C_Alice: Ok("<Bob_Public_Key_Base64>")
+    C_Alice-->>Alice: "*** KEY Bob <Bob_Public_Key_Base64>\r\n"
+    Alice->>Alice: Cache Bob's X25519 Public Key in memory
+
+    Note over Alice,Bob: Step 2: Client-Side Cryptographic Construction
+    Alice->>Alice: Generate Ephemeral Secret k_eph & Public P_eph
+    Alice->>Alice: Compute DH Secret: S = ECDH(k_eph, P_Bob)
+    Alice->>Alice: Derive 32B Symmetric Key via HKDF-SHA256(S, "distrib-chat-e2ee-v1")
+    Alice->>Alice: Encrypt plaintext with ChaCha20-Poly1305 + 12B random nonce
+    Alice->>Alice: Pack: P_eph (32B) + Nonce (12B) + Ciphertext + Tag (16B) -> Base64
+
+    Note over Alice,Bob: Step 3: Zero-Knowledge Blind Relaying
+    Alice->>C_Alice: "/etell Bob <base64_payload>\r\n"
+    C_Alice->>S1: EncryptedTellRequest { from: "Alice", to: "Bob", ciphertext: "<b64>" }
+    S1->>Net1: ClusterSend { to: "Bob", msg: EncryptedTell { from: "Alice", ciphertext: "<b64>" } }
+    Net1->>Net2: TCP Mesh (LZ4 Compressed, opaque payload)
+    Net2->>S2: ClusterSend { to: "Bob", msg: EncryptedTell { from: "Alice", ciphertext: "<b64>" } }
+    S2->>C_Bob: DeliverToClient { client_id: target_id, msg: EncryptedTell { from: "Alice", ciphertext: "<b64>" } }
+    C_Bob-->>Bob: "*E2EE* Alice: <base64_payload>\r\n"
+
+    Note over Alice,Bob: Step 4: Client-Side Decryption & Verification
+    Bob->>Bob: Unpack Base64: Extract P_eph (32B), Nonce (12B), Ciphertext+Tag
+    Bob->>Bob: Compute DH Secret: S = ECDH(k_Bob_static, P_eph)
+    Bob->>Bob: Derive 32B Symmetric Key via HKDF-SHA256(S, "distrib-chat-e2ee-v1")
+    Bob->>Bob: Decrypt & Verify MAC with ChaCha20-Poly1305
+    Bob-->>Bob: Render in TUI: [E2EE] Alice: <plaintext> (Green Badge)
+```
+
+---
+
+### 4.5 Administrative Remote Kick & Disconnection Flow
+Any client can kick another user anywhere in the cluster. When the kick reaches the target node, the connection is closed and the unregistration propagates cluster-wide:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Alice as Alice (Moderator on Node 1)
+    participant C_Alice as clients (Alice, Node 1)
+    participant S1 as server (Node 1)
+    participant Net1 as system.network (Node 1)
+    participant Net2 as system.network (Node 2)
+    participant S2 as server (Node 2)
+    participant C_Bob as clients (Bob, Node 2)
+    actor Bob as Bob (Victim on Node 2)
+
+    Alice->>C_Alice: "/kick Bob\r\n"
+    C_Alice->>S1: KickRequest { kicker: "Alice", victim: "Bob" }
+    S1->>S1: Lookup "Bob" -> ClientEntry::Remote
+    S1->>Net1: ClusterKick { victim: "Bob", by: "Alice" }
+    Net1->>Net2: TCP Mesh (LZ4)
+    Net2->>S2: ClusterKick { victim: "Bob", by: "Alice" }
+    S2->>S2: Lookup "Bob" -> ClientEntry::Local(target_id)
+    S2->>C_Bob: KickClient { client_id: target_id, reason: "kicked by Alice" }
+    C_Bob-->>Bob: "You have been kicked: kicked by Alice\r\n"
+    C_Bob->>C_Bob: Close TCP connection & break recv loop
+    C_Bob->>S2: UnregisterClient { client_id: target_id, name: "Bob" }
+    S2->>S2: clients.remove("Bob")
+    S2->>Net2: ClusterClientDisconnected { name: "Bob" }
+    Net2->>Net1: TCP Mesh (LZ4)
+    Net1->>S1: ClusterClientDisconnected { name: "Bob" }
+    S1->>S1: clients.remove("Bob")
+    S1->>C_Alice: DeliverToClient { msg: Notice("*** Bob has disconnected") }
+    C_Alice-->>Alice: "*** You kicked Bob\r\n*** Bob has disconnected\r\n"
+```
+
+## 5. Message Protocol
 
 ### Terminal / Local Client Messages ([`src/protocol.rs`](file:///home/smunix/Projects/scratchpad/rs/parconc-examples/distrib-chat/src/protocol.rs))
 - `ChatMessage::Notice(String)`: System announcements (`*** Alice has connected`).
 - `ChatMessage::Tell { from, msg }`: Whispers (`*Alice*: hello`).
+- `ChatMessage::EncryptedTell { from, ciphertext }`: End-to-end encrypted whispers (`*E2EE* Alice: <base64>`).
 - `ChatMessage::Broadcast { from, msg }`: Chat messages (`<Alice>: hello`).
 
 ### Cluster Synchronization Messages (Internode)
-- `ClusterNewClient { name }`: Broadcast when a user registers on any node.
+- `ClusterNewClient { name, pubkey }`: Broadcast when a user registers on any node.
+- `ClusterClientKey { name, pubkey }`: Broadcast when a user registers or updates their E2EE public key.
 - `ClusterClientDisconnected { name }`: Broadcast when a user disconnects or quits.
 - `ClusterBroadcast { msg }`: Relays a public chat message across all cluster nodes.
-- `ClusterSend { to, msg }`: Routes a private message (whisper) across nodes to the destination client.
+- `ClusterSend { to, msg }`: Routes a private message (whisper or E2EE payload) across nodes to the destination client.
 - `ClusterKick { victim, by }`: Directs the remote node hosting `victim` to terminate that client's connection.
 - `ClusterSync { clients }`: Periodic cluster reconciliation ensuring convergence even after network hiccups.
 
 ---
 
-## 5. Configuration & Compression
+## 6. Configuration & Compression
 
 Network frame compression is activated by adding `compression.lz4 = "Preferred"` under `[system.network]` in each node's TOML file.
 
@@ -156,7 +376,7 @@ compression.lz4 = "Preferred"
 
 ---
 
-## 6. How to Build & Run
+## 7. How to Build & Run
 
 ### Prerequisites
 - Rust 1.85+ (Edition 2024)
@@ -193,7 +413,7 @@ INFO acceptor/_ - Chat server listening for telnet clients addr=0.0.0.0:44441
 
 ---
 
-## 7. Interactive Walkthrough
+## 8. Interactive Walkthrough
 
 ### Connecting Alice to Node 1
 In another terminal:
@@ -290,7 +510,7 @@ In Alice's terminal:
 
 ---
 
-## 8. Automated Integration Tests
+## 9. Automated Integration Tests
 
 To verify both standard cluster routing and the End-to-End Encryption (E2EE) pipeline programmatically, run:
 
@@ -307,9 +527,57 @@ cargo test --test cluster_test -- --nocapture
 
 ---
 
-## 9. End-to-End Encryption (E2EE) & Dedicated Terminal Client
+## 10. End-to-End Encryption (E2EE) Cryptographic Architecture & Flow
 
-The distributed chat system features full **End-to-End Encryption (E2EE)** for private whispers between users across the cluster. Intermediate server nodes act purely as blind routing relays: they forward opaque base64 ciphertext payloads and have **zero visibility** into the plaintext contents, nor do they possess private keys.
+The distributed chat system features full **End-to-End Encryption (E2EE)** for private whispers between users across the cluster. Intermediate server nodes act purely as blind routing relays: they forward opaque Base64 ciphertext payloads and have **zero visibility** into the plaintext contents, nor do they possess private keys.
+
+### Cryptographic Flow & Architecture
+
+```mermaid
+flowchart TD
+    subgraph Sender ["Sender (Alice's Client)"]
+        SK_A["Ephemeral Secret<br/>(k_eph: 32B, fresh CSPRNG)"] --> DH_A["Diffie-Hellman<br/>ECDH(k_eph, P_Bob)"]
+        PK_B["Bob's Static Public Key<br/>(P_Bob: 32B from /getkey)"] --> DH_A
+        DH_A --> Secret_A["Shared Secret (32B)"]
+        Secret_A --> HKDF_A["HKDF-SHA256<br/>info = 'distrib-chat-e2ee-v1'"]
+        HKDF_A --> SymKey_A["Symmetric Key (32B)"]
+        Nonce_A["Random Nonce (12B)"] --> AEAD_Enc["ChaCha20-Poly1305<br/>Encrypt & Sign"]
+        SymKey_A --> AEAD_Enc
+        Plaintext["Plaintext Message"] --> AEAD_Enc
+        AEAD_Enc --> CT_Tag["Ciphertext + Poly1305 Tag (16B)"]
+        
+        PK_Eph["Ephemeral Public Key<br/>(P_eph: 32B)"] --> Packer["Binary Payload Packer"]
+        Nonce_A --> Packer
+        CT_Tag --> Packer
+        Packer --> B64_Enc["Base64 Encode"]
+        B64_Enc --> WireMsg["Wire Format:<br/>/etell Bob &lt;base64_payload&gt;"]
+    end
+
+    subgraph Relays ["Blind Cluster Relays (Zero-Knowledge)"]
+        WireMsg --> Node1_Relay["Node 1 (server)<br/>Inspects only 'Bob' routing key"]
+        Node1_Relay -->|"ClusterSend { to: 'Bob', msg }<br/>(TCP + LZ4 Mesh)"| Node2_Relay["Node 2 (server)<br/>Forwards to Bob's socket"]
+        Node2_Relay --> WireDelivery["*E2EE* Alice: &lt;base64_payload&gt;"]
+    end
+
+    subgraph Recipient ["Recipient (Bob's Client)"]
+        WireDelivery --> B64_Dec["Base64 Decode"]
+        B64_Dec --> Unpacker["Binary Payload Unpacker"]
+        Unpacker --> Ext_PK_Eph["Extracted P_eph (32B)"]
+        Unpacker --> Ext_Nonce["Extracted Nonce (12B)"]
+        Unpacker --> Ext_CT["Extracted Ciphertext + Tag"]
+        
+        Ext_PK_Eph --> DH_B["Diffie-Hellman<br/>ECDH(k_Bob_static, P_eph)"]
+        SK_B["Bob's Static Secret<br/>(k_Bob_static: 32B in memory)"] --> DH_B
+        DH_B --> Secret_B["Identical Shared Secret (32B)"]
+        Secret_B --> HKDF_B["HKDF-SHA256<br/>info = 'distrib-chat-e2ee-v1'"]
+        HKDF_B --> SymKey_B["Identical Symmetric Key (32B)"]
+        
+        SymKey_B --> AEAD_Dec["ChaCha20-Poly1305<br/>Verify MAC & Decrypt"]
+        Ext_Nonce --> AEAD_Dec
+        Ext_CT --> AEAD_Dec
+        AEAD_Dec --> DecryptedPlaintext["Decrypted Plaintext<br/>Rendered in TUI with [E2EE] badge"]
+    end
+```
 
 ### Cryptographic Stack & Primitives
 - **Key Agreement (Diffie-Hellman)**: **X25519** (`x25519-dalek`) provides elliptic curve Diffie-Hellman operations for client identity keys and per-message ephemeral keys.
@@ -317,9 +585,16 @@ The distributed chat system features full **End-to-End Encryption (E2EE)** for p
 - **Authenticated Symmetric Cipher**: **ChaCha20-Poly1305 AEAD** (`chacha20poly1305`) encrypts message contents with a random 96-bit (12-byte) nonce per message, ensuring both confidentiality and tamper detection.
 - **Wire Encoding**: Standard Base64 (`base64`) serializes the binary payload into ASCII strings compatible with telnet/TCP streams.
 
-### Wire Payload & Forward Secrecy
-Each encrypted whisper packs:
-$$\text{Payload} = \text{EphemeralPublicKey}_{32\text{B}} \parallel \text{Nonce}_{12\text{B}} \parallel (\text{Ciphertext} \parallel \text{Poly1305Tag}_{16\text{B}})$$
+### Binary Wire Payload & Forward Secrecy
+
+Before Base64 serialization, binary bytes are packed contiguously into a single envelope:
+
+```text
++------------------------------------+------------------+-----------------------------+--------------------------+
+| Ephemeral Public Key (32 bytes)    | Nonce (12 bytes) | ChaCha20 Ciphertext (var)   | Poly1305 Tag (16 bytes)  |
++------------------------------------+------------------+-----------------------------+--------------------------+
+| 0                               31 | 32            43 | 44             (len - 17)   | (len - 16)      (len - 1)|
+```
 
 Because the sender generates a fresh ephemeral X25519 keypair for every whisper:
 1. **Forward Secrecy**: Even if a client's long-term identity key were compromised in the future, past whispered messages cannot be decrypted because ephemeral private keys are discarded immediately after message transmission.
@@ -339,7 +614,7 @@ Because the sender generates a fresh ephemeral X25519 keypair for every whisper:
 
 ---
 
-## 10. Modern Ratatui Terminal User Interface (`distrib-chat-client`)
+## 11. Modern Ratatui Terminal User Interface (`distrib-chat-client`)
 
 A full-fledged, modern Terminal User Interface (TUI) client built with **Ratatui** and **Crossterm** is provided under [`src/bin/client.rs`](file:///home/smunix/Projects/scratchpad/rs/parconc-examples/distrib-chat/src/bin/client.rs).
 
