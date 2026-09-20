@@ -1,0 +1,6 @@
+# Configuration for Cluster Node 2
+# elfo-network clustering settings
+
+[system.network]
+listen = ["tcp://127.0.0.1:9302"]
+discovery.predefined = ["tcp://127.0.0.1:9301"]

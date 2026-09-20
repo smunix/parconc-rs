@@ -1,0 +1,6 @@
+# Configuration for Cluster Node 3
+# Connects to Node 1 and Node 2
+
+[system.network]
+listen = ["tcp://127.0.0.1:9303"]
+discovery.predefined = ["tcp://127.0.0.1:9301", "tcp://127.0.0.1:9302"]

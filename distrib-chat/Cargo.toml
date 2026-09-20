@@ -1,0 +1,16 @@
+[package]
+name = "distrib-chat"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+elfo = { path = "/home/smunix/Projects/oss/rs/elfo/elfo", features = ["full", "network", "unstable"] }
+tokio = { version = "1.38", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+toml = "1.1"
+anyhow = "1.0"
+humantime-serde = "1"
+derive_more = { version = "2", features = ["display", "from"] }
+futures = "0.3"
